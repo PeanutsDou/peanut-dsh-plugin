@@ -16,8 +16,32 @@ internal static class Program
     private const int Port = 3080;
     private const int SW_RESTORE = 9;
 
+    // 全局键盘钩子（双击 Ctrl 唤起）
+    private const int WH_KEYBOARD_LL = 13;
+    private const int WM_KEYDOWN = 0x0100;
+    private const int WM_KEYUP = 0x0101;
+    private const int VK_CONTROL = 0x11;
+    private const int VK_RCONTROL = 0xA3;
+    private const int TRIGGER_WINDOW_MS = 500;
+    private const int TRIGGER_COOLDOWN_MS = 300;
+
     /// 渲染进程崩溃自动重载的节流时间戳（避免崩溃死循环）。
     private static long _lastReloadTick;
+
+    private static Form? _mainForm;
+    private static NotifyIcon? _notifyIcon;
+    private static Icon? _appIcon;
+
+    // 双击 Ctrl 检测状态
+    private static long _lastCtrlDownAt;
+    private static long _lastTriggeredAt;
+    private static bool _ctrlIsDown;
+
+    // 键盘钩子句柄 + 委托（static 字段保持引用，防止被 GC）
+    private static LowLevelKeyboardProc? _keyboardProc;
+    private static IntPtr _hookId = IntPtr.Zero;
+
+    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern bool DestroyIcon(IntPtr handle);
@@ -30,6 +54,18 @@ internal static class Program
 
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr GetModuleHandle(string? lpModuleName);
 
     [STAThread]
     private static void Main()
@@ -79,8 +115,9 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
-        Icon? icon = null;
-        try { icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { /* ignore */ }
+        try { _appIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
+        catch { _appIcon = null; }
+
         var form = new Form
         {
             Text = "DeepSeek Harness",
@@ -88,15 +125,32 @@ internal static class Program
             StartPosition = FormStartPosition.CenterScreen,
             MinimumSize = new Size(800, 600),
             WindowState = FormWindowState.Maximized,
-            Icon = icon ?? SystemIcons.Application
+            Icon = _appIcon ?? SystemIcons.Application
         };
+        _mainForm = form;
 
         var web = new WebView2 { Dock = DockStyle.Fill };
         form.Controls.Add(web);
+
+        // 关闭窗口 = 彻底退出（杀掉 DSH 服务 + 释放资源）
         form.FormClosing += (_, _) =>
         {
             try { web.Dispose(); } catch { /* ignore */ }
-            icon?.Dispose();
+            StopHotkey();
+            KillDsh();
+            _notifyIcon?.Dispose();
+            _appIcon?.Dispose();
+        };
+
+        // 最小化 → 缩到托盘（可选的后台运行方式）
+        form.Resize += (_, _) =>
+        {
+            if (form.WindowState == FormWindowState.Minimized)
+            {
+                form.Hide();
+                form.ShowInTaskbar = false;
+                _notifyIcon!.Visible = true;
+            }
         };
 
         form.Load += async (_, _) =>
@@ -110,8 +164,145 @@ internal static class Program
             web.CoreWebView2.Navigate(Url);
         };
 
+        SetupTray(form);
+        StartHotkey(form);
+
         Application.Run(form);
     }
+
+    // ===== 托盘 =====
+
+    private static void SetupTray(Form form)
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("显示主窗口", null, (_, _) => ShowMainForm(form));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("退出（同时关闭 DSH 服务）", null, (_, _) =>
+        {
+            form.Close();
+        });
+
+        _notifyIcon = new NotifyIcon
+        {
+            Icon = _appIcon ?? SystemIcons.Application,
+            Text = "DeepSeek Harness",
+            Visible = true,
+            ContextMenuStrip = menu
+        };
+        _notifyIcon.DoubleClick += (_, _) => ShowMainForm(form);
+    }
+
+    private static void ShowMainForm(Form form)
+    {
+        form.Show();
+        form.ShowInTaskbar = true;
+        form.WindowState = FormWindowState.Normal;
+        ShowWindow(form.Handle, SW_RESTORE);
+        SetForegroundWindow(form.Handle);
+    }
+
+    // ===== 全局双击 Ctrl 热键 =====
+
+    private static void StartHotkey(Form form)
+    {
+        try
+        {
+            _keyboardProc = HookCallback;
+            using var cur = Process.GetCurrentProcess();
+            using var mod = cur.MainModule;
+            _hookId = SetWindowsHookEx(WH_KEYBOARD_LL, _keyboardProc, GetModuleHandle(mod?.ModuleName), 0);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[DshShell] 全局热键注册失败: {ex.Message}");
+        }
+    }
+
+    private static void StopHotkey()
+    {
+        if (_hookId != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_hookId);
+            _hookId = IntPtr.Zero;
+        }
+    }
+
+    private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0)
+        {
+            var vkCode = Marshal.ReadInt32(lParam);
+            var isCtrl = vkCode is VK_CONTROL or VK_RCONTROL;
+            if (isCtrl)
+            {
+                if (wParam == (IntPtr)WM_KEYDOWN)
+                {
+                    if (!_ctrlIsDown)
+                    {
+                        _ctrlIsDown = true;
+                        var now = Environment.TickCount64;
+                        var withinDoubleTap = now - _lastCtrlDownAt <= TRIGGER_WINDOW_MS;
+                        var outsideCooldown = now - _lastTriggeredAt > TRIGGER_COOLDOWN_MS;
+                        _lastCtrlDownAt = now;
+                        if (withinDoubleTap && outsideCooldown)
+                        {
+                            _lastTriggeredAt = now;
+                            BringWindowToFront();
+                        }
+                    }
+                }
+                else if (wParam == (IntPtr)WM_KEYUP)
+                {
+                    _ctrlIsDown = false;
+                }
+            }
+        }
+        return CallNextHookEx(_hookId, nCode, wParam, lParam);
+    }
+
+    private static void BringWindowToFront()
+    {
+        var form = _mainForm;
+        if (form is null || form.IsDisposed) return;
+        if (form.InvokeRequired)
+        {
+            form.BeginInvoke(BringWindowToFront);
+            return;
+        }
+        if (form.WindowState == FormWindowState.Minimized)
+            form.WindowState = FormWindowState.Normal;
+        form.Show();
+        form.ShowInTaskbar = true;
+        form.Activate();
+        ShowWindow(form.Handle, SW_RESTORE);
+        SetForegroundWindow(form.Handle);
+    }
+
+    // ===== 退出时杀掉 DSH 服务 =====
+
+    private static void KillDsh()
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            psi.ArgumentList.Add("-NoProfile");
+            psi.ArgumentList.Add("-Command");
+            psi.ArgumentList.Add(
+                "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" " +
+                "| Where-Object { $_.CommandLine -match '--port 3080' } " +
+                "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force }");
+            using var p = Process.Start(psi);
+            p?.WaitForExit(5000);
+        }
+        catch { /* ignore */ }
+    }
+
+    // ===== 以下为原有 WebView2 初始化逻辑（保持不变） =====
 
     /// <summary>
     /// 统一的 WebView2 初始化：设置 + 权限 + 下载 + 弹窗 + 崩溃自愈。
@@ -129,12 +320,6 @@ internal static class Program
         settings.IsPasswordAutosaveEnabled = false;      // 不保存密码
 
         // 权限：自动放行插件/DSH 依赖的能力，其余保持默认拒绝。
-        // - Notifications：桌面通知插件（dsh-notification 等）
-        // - ClipboardRead：复制/粘贴（此 SDK 版本剪贴板读写的唯一权限项）
-        // - Autoplay：声音类插件（打字音效、自定义提示音）无手势时也能播放
-        // - MultipleAutomaticDownloads：多文件导出插件不被拦截
-        // - PersistentStorage：插件 IndexedDB/localStorage 免于被驱逐
-        // 麦克风/摄像头保持默认拒绝（隐私），将来有语音类插件再改为弹窗询问。
         web.CoreWebView2.PermissionRequested += (_, e) =>
         {
             if (e.PermissionKind is CoreWebView2PermissionKind.Notifications
