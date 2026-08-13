@@ -6,7 +6,7 @@ DeepSeek Harness（DSH）个人插件合集——集中管理我自己维护的 
 
 | 插件 | 说明 | 状态 |
 |------|------|------|
-| [dsh-launcher](dsh-launcher) | DSH 桌面独立窗口启动器（WebView2 壳）：开机自启、单实例、真 DPI 高清、无边框自绘标题栏、自定义图标 | ✅ 可用 |
+| [dsh-launcher](dsh-launcher) | DSH 桌面独立窗口启动器（WebView2 壳）：开机自启、单实例、真 DPI 高清、自定义图标 | ✅ 可用 |
 
 ## 目录约定
 
