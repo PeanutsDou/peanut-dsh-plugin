@@ -1,0 +1,16 @@
+# --- build artifacts ---
+bin/
+obj/
+dist/
+*.pdb
+*.user
+.vs/
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+
+# --- cache dirs ---
+node_modules/
+__pycache__/
+*.pyc
