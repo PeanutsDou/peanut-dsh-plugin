@@ -15,12 +15,32 @@ internal static class Program
     private const string Url = "http://127.0.0.1:3080";
     private const int Port = 3080;
     private const int SW_RESTORE = 9;
+    private const int WM_NCHITTEST = 0x84;
+    private const int WM_NCLBUTTONDOWN = 0xA1;
+    private const int WM_GETMINMAXINFO = 0x24;
+    private const int HTCAPTION = 2;
 
     /// 渲染进程崩溃自动重载的节流时间戳（避免崩溃死循环）。
     private static long _lastReloadTick;
 
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    private static extern bool DestroyIcon(IntPtr handle);
+    // 标题栏配色 —— 取自 DSH 设计 token（@deepseek-ai/dsh-client-ui-theme / design-platform.css）
+    private static readonly Color ThemeLightBg = Color.FromArgb(255, 255, 255);     // neutral-bluish-00
+    private static readonly Color ThemeDarkBg = Color.FromArgb(21, 21, 23);         // neutral-bluish-950
+    private static readonly Color ThemeLightText = Color.FromArgb(60, 60, 61);      // neutral-700
+    private static readonly Color ThemeDarkText = Color.FromArgb(235, 238, 242);    // neutral-bluish-100
+    private static readonly Color ThemeLightGlyph = Color.FromArgb(84, 85, 87);     // neutral-600
+    private static readonly Color ThemeDarkGlyph = Color.FromArgb(207, 211, 214);   // neutral-bluish-300
+    private static readonly Color ThemeLightHover = Color.FromArgb(242, 242, 242);
+    private static readonly Color ThemeDarkHover = Color.FromArgb(53, 54, 56);      // neutral-bluish-800
+    private static readonly Color ThemeCloseHover = Color.FromArgb(232, 17, 35);    // #E81123
+    private static readonly Color ThemeLightBorder = Color.FromArgb(237, 237, 237); // neutral-150
+    private static readonly Color ThemeDarkBorder = Color.FromArgb(44, 44, 46);     // neutral-bluish-850
+
+    [DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
@@ -81,18 +101,23 @@ internal static class Program
 
         Icon? icon = null;
         try { icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { /* ignore */ }
-        var form = new Form
+
+        var isDark = DetectDarkTheme();
+        var form = new AppForm
         {
             Text = "DeepSeek Harness",
             ClientSize = new Size(1280, 840),
             StartPosition = FormStartPosition.CenterScreen,
             MinimumSize = new Size(800, 600),
             WindowState = FormWindowState.Maximized,
-            Icon = icon ?? SystemIcons.Application
+            Icon = icon ?? SystemIcons.Application,
+            FormBorderStyle = FormBorderStyle.None,
+            BackColor = isDark ? ThemeDarkBg : ThemeLightBg
         };
 
         var web = new WebView2 { Dock = DockStyle.Fill };
         form.Controls.Add(web);
+        form.Controls.Add(BuildTitleBar(form, icon, isDark));
         form.FormClosing += (_, _) =>
         {
             try { web.Dispose(); } catch { /* ignore */ }
@@ -111,6 +136,193 @@ internal static class Program
         };
 
         Application.Run(form);
+    }
+
+    /// <summary>无边框主窗体：普通状态支持边缘拖拽调整大小；最大化时限制在屏幕工作区（不盖任务栏）。</summary>
+    private sealed class AppForm : Form
+    {
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_GETMINMAXINFO)
+            {
+                var mmi = (MINMAXINFO)Marshal.PtrToStructure(m.LParam, typeof(MINMAXINFO))!;
+                var wa = Screen.FromHandle(Handle).WorkingArea;
+                mmi.ptMaxPosition.x = wa.Left;
+                mmi.ptMaxPosition.y = wa.Top;
+                mmi.ptMaxSize.x = wa.Width;
+                mmi.ptMaxSize.y = wa.Height;
+                Marshal.StructureToPtr(mmi, m.LParam, false);
+                m.Result = IntPtr.Zero;
+                return;
+            }
+
+            base.WndProc(ref m);
+
+            if (m.Msg == WM_NCHITTEST && WindowState == FormWindowState.Normal)
+            {
+                var lp = m.LParam.ToInt64();
+                var x = (short)(lp & 0xFFFF);
+                var y = (short)((lp >> 16) & 0xFFFF);
+                var pt = PointToClient(new Point(x, y));
+                var size = ClientSize;
+                const int pad = 6;
+                var left = pt.X <= pad;
+                var right = pt.X >= size.Width - pad;
+                var top = pt.Y <= pad;
+                var bottom = pt.Y >= size.Height - pad;
+                if (left && top) m.Result = (IntPtr)13;          // HTTOPLEFT
+                else if (right && top) m.Result = (IntPtr)14;    // HTTOPRIGHT
+                else if (left && bottom) m.Result = (IntPtr)16;  // HTBOTTOMLEFT
+                else if (right && bottom) m.Result = (IntPtr)17; // HTBOTTOMRIGHT
+                else if (left) m.Result = (IntPtr)10;            // HTLEFT
+                else if (right) m.Result = (IntPtr)11;           // HTRIGHT
+                else if (top) m.Result = (IntPtr)12;             // HTTOP
+                else if (bottom) m.Result = (IntPtr)15;          // HTBOTTOM
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT { public int x; public int y; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MINMAXINFO
+        {
+            public POINT ptReserved;
+            public POINT ptMaxSize;
+            public POINT ptMaxPosition;
+            public POINT ptMinTrackSize;
+            public POINT ptMaxTrackSize;
+        }
+    }
+
+    /// <summary>从 $DSH_HOME/settings.yaml 读取 ui-theme 偏好；读不到时按亮色处理。</summary>
+    private static bool DetectDarkTheme()
+    {
+        try
+        {
+            var home = Environment.GetEnvironmentVariable("DSH_HOME");
+            if (string.IsNullOrWhiteSpace(home))
+                home = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh");
+            var path = Path.Combine(home, "settings.yaml");
+            if (!File.Exists(path)) return false;
+            var m = Regex.Match(File.ReadAllText(path), @"preference:\s*(light|dark)");
+            return m.Success && m.Groups[1].Value == "dark";
+        }
+        catch { return false; }
+    }
+
+    /// <summary>构建与 DSH Web UI 同色系的自定义标题栏（供无边框窗口使用）。</summary>
+    private static Panel BuildTitleBar(AppForm form, Icon? icon, bool isDark)
+    {
+        var bg = isDark ? ThemeDarkBg : ThemeLightBg;
+        var text = isDark ? ThemeDarkText : ThemeLightText;
+        var glyph = isDark ? ThemeDarkGlyph : ThemeLightGlyph;
+        var hover = isDark ? ThemeDarkHover : ThemeLightHover;
+        var border = isDark ? ThemeDarkBorder : ThemeLightBorder;
+
+        var bar = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = bg };
+
+        // 底部 1px 分隔线（与 DSH border token 同色）
+        bar.Paint += (_, e) =>
+        {
+            using var pen = new Pen(border);
+            e.Graphics.DrawLine(pen, 0, bar.Height - 1, bar.Width - 1, bar.Height - 1);
+        };
+
+        // 标题栏拖动（最大化时不拖，避免误触还原）
+        void DragStart(object? s, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || form.WindowState == FormWindowState.Maximized) return;
+            ReleaseCapture();
+            SendMessage(form.Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+        }
+        void ToggleOnDouble(object? s, EventArgs e)
+        {
+            form.WindowState = form.WindowState == FormWindowState.Maximized
+                ? FormWindowState.Normal : FormWindowState.Maximized;
+        }
+
+        var titleLabel = new Label
+        {
+            Text = "DeepSeek Harness",
+            AutoSize = false,
+            Location = new Point(34, 0),
+            Size = new Size(280, 36),
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = text,
+            BackColor = bg,
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular)
+        };
+        titleLabel.MouseDown += DragStart;
+        titleLabel.DoubleClick += ToggleOnDouble;
+        bar.Controls.Add(titleLabel);
+
+        var minBtn = MakeTitleButton("─", bg, glyph, hover, () => form.WindowState = FormWindowState.Minimized);
+        var maxBtn = MakeTitleButton("□", bg, glyph, hover, () =>
+            form.WindowState = form.WindowState == FormWindowState.Maximized
+                ? FormWindowState.Normal : FormWindowState.Maximized);
+        var closeBtn = MakeTitleButton("✕", bg, glyph, ThemeCloseHover, () => form.Close());
+        closeBtn.MouseEnter += (_, _) => closeBtn.ForeColor = Color.White;
+        closeBtn.MouseLeave += (_, _) => closeBtn.ForeColor = glyph;
+        bar.Controls.Add(closeBtn);
+        bar.Controls.Add(maxBtn);
+        bar.Controls.Add(minBtn);
+
+        bar.Resize += (_, _) =>
+        {
+            closeBtn.Location = new Point(bar.Width - 46, 0);
+            maxBtn.Location = new Point(bar.Width - 92, 0);
+            minBtn.Location = new Point(bar.Width - 138, 0);
+            titleLabel.Size = new Size(Math.Max(120, bar.Width - 138 - 34), 36);
+        };
+
+        // 最大化/还原时切换按钮字形（□ / ❐）
+        form.Resize += (_, _) =>
+            maxBtn.Text = form.WindowState == FormWindowState.Maximized ? "❐" : "□";
+
+        if (icon is not null)
+        {
+            var iconBox = new PictureBox
+            {
+                Image = icon.ToBitmap(),
+                SizeMode = PictureBoxSizeMode.Zoom,
+                Location = new Point(10, 9),
+                Size = new Size(18, 18),
+                BackColor = bg,
+                TabStop = false
+            };
+            iconBox.MouseDown += DragStart;
+            iconBox.DoubleClick += ToggleOnDouble;
+            bar.Controls.Add(iconBox);
+        }
+
+        bar.MouseDown += DragStart;
+        bar.DoubleClick += ToggleOnDouble;
+        return bar;
+    }
+
+    /// <summary>标题栏窗口控制按钮（扁平样式，46×36）。</summary>
+    private static Button MakeTitleButton(string glyph, Color bg, Color fg, Color hover, Action onClick)
+    {
+        var b = new Button
+        {
+            Text = glyph,
+            FlatStyle = FlatStyle.Flat,
+            Size = new Size(46, 36),
+            Font = new Font("Segoe UI", 10f),
+            ForeColor = fg,
+            BackColor = bg,
+            UseVisualStyleBackColor = false,
+            Cursor = Cursors.Hand,
+            TabStop = false,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        b.FlatAppearance.BorderSize = 0;
+        b.FlatAppearance.MouseOverBackColor = hover;
+        b.FlatAppearance.MouseDownBackColor = hover;
+        b.Click += (_, _) => onClick();
+        return b;
     }
 
     /// <summary>

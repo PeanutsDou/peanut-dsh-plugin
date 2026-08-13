@@ -18,6 +18,7 @@ DeepSeek Harness 的 Windows 桌面壳：把 Web UI 装进独立的 WebView2 窗
 2. **修复「无图标」**：原 release 未打入图标资源。生成多尺寸 `app.ico`（16–256px）经 `<ApplicationIcon>` 嵌入 exe，窗口/任务栏/快捷方式统一显示。
 3. **启动即最大化**：`WindowState = FormWindowState.Maximized`（原来是固定 1280×840）。
 4. **目标框架 net10.0-windows → net9.0-windows**：便于用 .NET 9 SDK 构建。
+5. **无边框 + 自绘标题栏**：去掉系统原生标题栏（`FormBorderStyle.None`），自绘 36px 标题栏与 DSH Web UI 无缝衔接——配色取自 DSH 设计 token（`dsh-client-ui-theme`），启动时读取 `~/.dsh/settings.yaml` 的 `ui-theme.preference` 自动匹配亮/暗主题；支持拖拽移动、双击最大化、边缘调整大小，最大化时不盖任务栏。
 
 ## 构建
 
