@@ -31,6 +31,9 @@ internal static class Program
     private static Form? _mainForm;
     private static NotifyIcon? _notifyIcon;
     private static Icon? _appIcon;
+    private static bool _forceExit;
+    private static int _wmShowMain;
+    private static bool _closePromptShowing;
 
     // 双击 Ctrl 检测状态
     private static long _lastCtrlDownAt;
@@ -42,6 +45,24 @@ internal static class Program
     private static IntPtr _hookId = IntPtr.Zero;
 
     private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    /// <summary>
+    /// 主窗口：监听第二个实例发来的"显示主窗口"消息，由第一个实例自己执行完整恢复，
+    /// 避免第二个实例用 ShowWindow(SW_RESTORE) 硬拉隐藏窗口导致 WebView2 白屏。
+    /// </summary>
+    private sealed class MainForm : Form
+    {
+        public Action? ShowRequested;
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == _wmShowMain)
+            {
+                ShowRequested?.Invoke();
+                return;
+            }
+            base.WndProc(ref m);
+        }
+    }
 
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern bool DestroyIcon(IntPtr handle);
@@ -67,6 +88,12 @@ internal static class Program
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr GetModuleHandle(string? lpModuleName);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int RegisterWindowMessage(string message);
+
+    [DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
     [STAThread]
     private static void Main()
     {
@@ -74,15 +101,20 @@ internal static class Program
         // 位图拉伸到 125%+，整个 Web UI 看起来发糊。必须最先调用、早于任何窗口创建。
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
 
-        // 单实例：重复启动只把已开窗口带到前台，避免多开 WebView2 进程白白占用内存
+        // 自定义窗口消息：第二个实例发它，通知第一个实例完整恢复窗口
+        _wmShowMain = RegisterWindowMessage("DshWeb.ShowMainForm");
+        DebugLog($"process start pid={Environment.ProcessId}");
+
+        // 单实例：重复启动只通知已开实例恢复窗口，避免多开 WebView2 进程白白占用内存
         using var mutex = new Mutex(true, @"Local\DshWeb.SingleInstance", out var firstInstance);
         if (!firstInstance)
         {
             var existing = FindWindow(null, "DeepSeek Harness");
+            DebugLog($"second instance, found={existing != IntPtr.Zero}");
             if (existing != IntPtr.Zero)
             {
-                ShowWindow(existing, SW_RESTORE);
-                SetForegroundWindow(existing);
+                PostMessage(existing, _wmShowMain, IntPtr.Zero, IntPtr.Zero);
+                DebugLog("second instance, posted ShowMainForm message");
             }
             return;
         }
@@ -118,7 +150,7 @@ internal static class Program
         try { _appIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
         catch { _appIcon = null; }
 
-        var form = new Form
+        var form = new MainForm
         {
             Text = "DeepSeek Harness",
             ClientSize = new Size(1280, 840),
@@ -128,29 +160,48 @@ internal static class Program
             Icon = _appIcon ?? SystemIcons.Application
         };
         _mainForm = form;
+        form.ShowRequested = () => ShowMainForm(form);
 
         var web = new WebView2 { Dock = DockStyle.Fill };
         form.Controls.Add(web);
 
-        // 关闭窗口 = 彻底退出（杀掉 DSH 服务 + 释放资源）
-        form.FormClosing += (_, _) =>
+        // 关闭窗口：首次弹出选择（最小化到托盘 / 关闭），可记住选择；记住后不再提示。
+        form.FormClosing += (_, e) =>
         {
-            try { web.Dispose(); } catch { /* ignore */ }
-            StopHotkey();
-            KillDsh();
-            _notifyIcon?.Dispose();
-            _appIcon?.Dispose();
-        };
-
-        // 最小化 → 缩到托盘（可选的后台运行方式）
-        form.Resize += (_, _) =>
-        {
-            if (form.WindowState == FormWindowState.Minimized)
+            DebugLog($"FormClosing forceExit={_forceExit}");
+            // 托盘菜单"退出"已确认，直接放行并清理
+            if (_forceExit)
             {
-                form.Hide();
-                form.ShowInTaskbar = false;
-                _notifyIcon!.Visible = true;
+                CleanupShutdown(web);
+                return;
             }
+
+            // 已记住的偏好，直接执行
+            var pref = LoadClosePreference();
+            DebugLog($"FormClosing pref={pref}");
+            if (pref == "tray") { e.Cancel = true; HideToTray(); return; }
+            if (pref == "exit") { CleanupShutdown(web); return; }
+
+            // 首次关闭：先取消关闭，再延迟弹窗。避免在 FormClosing 事件里直接弹模态
+            // 对话框（TaskDialog）导致的窗口重入 / 白屏窗口问题。
+            e.Cancel = true;
+            if (_closePromptShowing) return;
+            _closePromptShowing = true;
+            form.BeginInvoke(() =>
+            {
+                try
+                {
+                    var choice = AskCloseAction();
+                    if (choice.Remember) SaveClosePreference(choice.Action);
+                    if (choice.Action == "tray") HideToTray();
+                    else if (choice.Action == "exit") { _forceExit = true; form.Close(); }
+                    // cancel：什么都不做，窗口保持打开
+                }
+                finally
+                {
+                    _closePromptShowing = false;
+                }
+            });
         };
 
         form.Load += async (_, _) =>
@@ -179,6 +230,7 @@ internal static class Program
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出（同时关闭 DSH 服务）", null, (_, _) =>
         {
+            _forceExit = true;
             form.Close();
         });
 
@@ -194,11 +246,109 @@ internal static class Program
 
     private static void ShowMainForm(Form form)
     {
+        DebugLog($"ShowMainForm called, state={form.WindowState} visible={form.Visible}");
         form.Show();
-        form.ShowInTaskbar = true;
-        form.WindowState = FormWindowState.Normal;
-        ShowWindow(form.Handle, SW_RESTORE);
+        // 注意：不要改 form.ShowInTaskbar！它会触发 RecreateHandle 销毁重建窗口句柄，
+        // 导致 WebView2 内容丢失 + 白屏。窗口 Show 后任务栏按钮自然恢复。
+        // 仅最小化时恢复为普通窗口；最大化保持最大化（SW_RESTORE 会把最大化降级，
+        // 状态切换 + 尺寸变化会导致 WebView2 白屏）
+        if (form.WindowState == FormWindowState.Minimized)
+            form.WindowState = FormWindowState.Normal;
+        form.Activate();
         SetForegroundWindow(form.Handle);
+        DebugLog($"ShowMainForm done, state={form.WindowState} visible={form.Visible}");
+    }
+
+    /// 真正退出前的清理：释放 WebView2、停热键、杀 DSH、清理托盘与图标。
+    private static void CleanupShutdown(WebView2 web)
+    {
+        try { web.Dispose(); } catch { /* ignore */ }
+        StopHotkey();
+        KillDsh();
+        _notifyIcon?.Dispose();
+        _appIcon?.Dispose();
+    }
+
+    /// 隐藏到托盘（不退出，DSH 继续后台运行）。
+    private static void HideToTray()
+    {
+        DebugLog("HideToTray called");
+        var form = _mainForm;
+        if (form is null || form.IsDisposed) return;
+        form.Hide();
+        // 注意：不要改 form.ShowInTaskbar！它会触发 RecreateHandle 销毁重建窗口句柄，
+        // 重建后窗口自动弹出且 WebView2 内容丢失 → 白屏。窗口 Hide 后任务栏按钮自然消失。
+        if (_notifyIcon is not null) _notifyIcon.Visible = true;
+        DebugLog($"HideToTray done, visible={form.Visible} state={form.WindowState}");
+    }
+
+    /// 诊断日志：写 %LOCALAPPDATA%\DshWeb\debug.log（定位窗口生命周期问题）。
+    private static void DebugLog(string message)
+    {
+        try
+        {
+            var p = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "DshWeb", "debug.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(p)!);
+            File.AppendAllText(p, $"[{DateTime.Now:HH:mm:ss.fff}] {message}\r\n");
+        }
+        catch { /* ignore */ }
+    }
+
+    /// 关闭偏好配置文件路径。
+    private static string ClosePrefPath()
+    {
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DshWeb", "close-action.txt");
+    }
+
+    private static string LoadClosePreference()
+    {
+        try
+        {
+            var p = ClosePrefPath();
+            if (File.Exists(p)) return File.ReadAllText(p).Trim();
+        }
+        catch { /* ignore */ }
+        return "";
+    }
+
+    private static void SaveClosePreference(string action)
+    {
+        try
+        {
+            var p = ClosePrefPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(p)!);
+            File.WriteAllText(p, action);
+        }
+        catch { /* ignore */ }
+    }
+
+    /// 关闭确认弹窗：最小化到托盘 / 关闭，可勾选"记住我的选择"。
+    private static (string Action, bool Remember) AskCloseAction()    {
+        var trayBtn = new TaskDialogButton("最小化到托盘");
+        var exitBtn = new TaskDialogButton("关闭");
+        var page = new TaskDialogPage
+        {
+            Caption = "DeepSeek Harness",
+            Heading = "关闭窗口",
+            Text = "选择关闭后的行为（最小化到托盘可继续后台运行）：",
+            Icon = TaskDialogIcon.Information,
+            AllowCancel = true,
+            Buttons = { trayBtn, exitBtn },
+            Verification = new TaskDialogVerificationCheckBox
+            {
+                Text = "记住我的选择，不再提示"
+            }
+        };
+
+        var result = TaskDialog.ShowDialog(page);
+        var remember = page.Verification.Checked;
+        if (result == trayBtn) return ("tray", remember);
+        if (result == exitBtn) return ("exit", remember);
+        return ("cancel", false);
     }
 
     // ===== 全局双击 Ctrl 热键 =====
@@ -272,9 +422,8 @@ internal static class Program
         if (form.WindowState == FormWindowState.Minimized)
             form.WindowState = FormWindowState.Normal;
         form.Show();
-        form.ShowInTaskbar = true;
+        // 注意：不要改 form.ShowInTaskbar（RecreateHandle 销毁重建 → 白屏），见 ShowMainForm。
         form.Activate();
-        ShowWindow(form.Handle, SW_RESTORE);
         SetForegroundWindow(form.Handle);
     }
 
@@ -367,6 +516,7 @@ internal static class Program
         // - blob: / data: / about: 等 → WebView2 默认行为（插件生成的预览等）
         web.CoreWebView2.NewWindowRequested += async (_, e) =>
         {
+            DebugLog($"NewWindowRequested uri={e.Uri}");
             if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out var uri)
                 || uri.Scheme is not ("http" or "https"))
                 return;
@@ -413,6 +563,7 @@ internal static class Program
     /// 插件内部弹窗用的轻量窗口（与主窗口共享 WebView2 用户数据，保持登录态/会话）。
     private static (Form Form, WebView2 Web) CreatePopupForm()
     {
+        DebugLog("CreatePopupForm called");
         var popupWeb = new WebView2 { Dock = DockStyle.Fill };
         var form = new Form
         {
