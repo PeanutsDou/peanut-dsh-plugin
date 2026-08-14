@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "ESNext.Disposable", "DOM"],
+    "strict": true,
+    "noImplicitAny": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "rootDir": "src",
+    "outDir": "lib",
+    "declaration": false,
+    "types": ["node"],
+    "paths": {
+      "@deepseek-ai/*": [
+        "C:/Users/douzhongjun/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/*"
+      ]
+    }
+  },
+  "include": ["src/index.ts"]
+}
