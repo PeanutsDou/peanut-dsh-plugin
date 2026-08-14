@@ -8,7 +8,7 @@
  * text-only model is refused before the wire.
  */
 
-import { LlmError } from '@deepseek-ai/dsh-llm'
+import { contentHasImage, LlmError } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { WireContentPart, WireMessage, WireRequest, WireTool, WireUserMessage } from './types.ts'
@@ -52,7 +52,7 @@ function resolveThinking(options: GenerateOptions, defaults: RequestDefaults): R
   return defaults.thinking === undefined ? {} : { thinking: defaults.thinking }
 }
 
-function flattenText(blocks: ContentBlock[]): string {
+function flattenText(blocks: readonly ContentBlock[]): string {
   return blocks
     .filter(block => block.type === 'text')
     .map(block => block.text)
@@ -85,26 +85,67 @@ async function imagePart(
 }
 
 /**
- * Build a user wire message: plain text when the message has no images, a
+ * Collect text and image parts from content blocks, recursing into tool
+ * results: used for top-level user content where text and images travel
+ * together in one parts array.
+ */
+async function collectParts(
+  blocks: readonly ContentBlock[],
+  attachments: AttachmentStore | undefined,
+  multimodal: boolean,
+  parts: WireContentPart[],
+): Promise<void> {
+  for (const block of blocks) {
+    if (block.type === 'text') {
+      if (block.text.length > 0) parts.push({ type: 'text', text: block.text })
+    } else if (block.type === 'image') {
+      if (!multimodal) {
+        throw new LlmError('the selected model does not support image input', 'UNSUPPORTED_CONTENT')
+      }
+      parts.push(await imagePart(block, attachments))
+    } else if (block.type === 'tool-result') {
+      await collectParts(block.content, attachments, multimodal, parts)
+    }
+  }
+}
+
+/**
+ * Collect image parts from content blocks, recursing into tool results. Text
+ * is intentionally skipped: tool-result text travels in its own `tool` wire
+ * message, and images follow in a separate user message (pi-ai's proven
+ * ordering for gateways that require tool output after `tool_calls`).
+ */
+async function collectImageParts(
+  blocks: readonly ContentBlock[],
+  attachments: AttachmentStore | undefined,
+  multimodal: boolean,
+  parts: WireContentPart[],
+): Promise<void> {
+  for (const block of blocks) {
+    if (block.type === 'image') {
+      if (!multimodal) {
+        throw new LlmError('the selected model does not support image input', 'UNSUPPORTED_CONTENT')
+      }
+      parts.push(await imagePart(block, attachments))
+    } else if (block.type === 'tool-result') {
+      await collectImageParts(block.content, attachments, multimodal, parts)
+    }
+  }
+}
+
+/**
+ * Build a user wire message: plain text when the content has no images, a
  * text/image part array when it does. Image input on a model not declared
  * multimodal is refused.
  */
 async function serializeUser(
-  message: Message,
+  content: readonly ContentBlock[],
   attachments: AttachmentStore | undefined,
   multimodal: boolean,
 ): Promise<WireUserMessage> {
-  const images = message.content.filter(block => block.type === 'image')
-  const text = flattenText(message.content)
-  if (images.length === 0) return { role: 'user', content: text }
-  if (!multimodal) {
-    throw new LlmError('the selected model does not support image input', 'UNSUPPORTED_CONTENT')
-  }
+  if (!contentHasImage(content)) return { role: 'user', content: flattenText(content) }
   const parts: WireContentPart[] = []
-  if (text.length > 0) parts.push({ type: 'text', text })
-  for (const image of images) {
-    parts.push(await imagePart(image, attachments))
-  }
+  await collectParts(content, attachments, multimodal, parts)
   return { role: 'user', content: parts }
 }
 
@@ -131,9 +172,11 @@ function serializeAssistant(message: Message): WireMessage {
 }
 
 /**
- * Serialize the conversation. Tool results become standalone `{role: 'tool'}`
- * messages; a mixed user message contributes its text and images first and
- * its tool results as separate wire messages after.
+ * Serialize the conversation. Each tool result becomes a standalone
+ * `{role: 'tool'}` message (gateways require tool output after `tool_calls`);
+ * a tool result that also carries an image sends its text in the tool message
+ * and the image parts in a following `Attached image(s) from tool result:`
+ * user message, mirroring pi-ai's ordering for this gateway family.
  * @param messages - the harness conversation, in order.
  * @param attachments - durable image byte resolver; required only when images are present.
  * @param multimodal - whether the selected model accepts image input.
@@ -160,13 +203,31 @@ export async function serializeMessages(
       wire.push(serializeAssistant(message))
       continue
     }
-    const toolResults = message.content.filter(block => block.type === 'tool-result')
-    wire.push(await serializeUser(message, attachments, multimodal))
-    for (const result of toolResults) {
+    const regular = message.content.filter(block => block.type !== 'tool-result')
+    const results = message.content.filter(block => block.type === 'tool-result')
+    const regularMessage = await serializeUser(regular, attachments, multimodal)
+    const regularContent = regularMessage.content
+    const regularHasContent = typeof regularContent === 'string'
+      ? regularContent.length > 0
+      : regularContent.length > 0
+    if (regularHasContent || results.length === 0) wire.push(regularMessage)
+    const imageParts: WireContentPart[] = []
+    for (const result of results) {
+      const resultText = flattenText(result.content)
+      const hasImages = contentHasImage(result.content)
       wire.push({
         role: 'tool',
         tool_call_id: result.toolCallId,
-        content: flattenText(result.content) || '(no output)',
+        content: resultText || (hasImages ? '(see attached image)' : '(no output)'),
+      })
+      if (hasImages) {
+        await collectImageParts(result.content, attachments, multimodal, imageParts)
+      }
+    }
+    if (imageParts.length > 0) {
+      wire.push({
+        role: 'user',
+        content: [{ type: 'text', text: 'Attached image(s) from tool result:' }, ...imageParts],
       })
     }
   }
