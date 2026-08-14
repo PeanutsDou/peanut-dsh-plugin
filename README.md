@@ -7,12 +7,15 @@ DeepSeek Harness（DSH）个人插件合集——集中管理我自己维护的 
 | 插件 | 说明 | 状态 |
 |------|------|------|
 | [dsh-launcher](dsh-launcher) | DSH 桌面独立窗口启动器（WebView2 壳）：开机自启、单实例、真 DPI 高清、自定义图标 | ✅ 可用 |
+| [llm-codemaker-hub](llm-codemaker-hub) | CodeMaker Hub provider 路由：经本地 hub 代理（127.0.0.1:15721）接公司 AI 网关，多模态模型支持 | ✅ 可用 |
+| [dsh-schedule-ui](dsh-schedule-ui) | 定时任务管理：会话级持久化任务 + 日历循环规则（daily/weekly/monthly/yearly）+ 浏览器第三页签 UI + `schedule_task` 模型工具 | ✅ 可用 |
 
 ## 目录约定
 
 - 每个插件占一个**顶层子目录**，完全自包含（自带 README / LICENSE / 源码 / 脚本）
 - 插件之间互不依赖；新增插件直接加同级目录即可
 - 根目录只放导航与说明，不放插件代码
+- `skills/` 存放插件开发规范等 agent skill
 
 ## 构建与安装
 
