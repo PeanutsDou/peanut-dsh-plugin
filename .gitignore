@@ -5,6 +5,7 @@ dist/
 *.pdb
 *.user
 .vs/
+lib/
 
 # --- OS junk ---
 .DS_Store
