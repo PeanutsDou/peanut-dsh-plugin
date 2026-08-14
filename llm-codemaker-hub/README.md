@@ -63,3 +63,5 @@ harness 会在发出请求前自动拒绝图片——无需按供应商手动区
 - hub 必须运行（托盘应用）；关闭后请求报连接失败。
 - 非 DeepSeek 模型（gpt/claude 等）走 DeepSeek 方言适配器：`reasoning_effort`/`thinking`
   参数是否被网关接受按模型实测；deepseek 系模型已验证（max 正常）。
+- 流式响应中的空白 `data:` 事件（网关/代理在大上下文 prefill 等静默期的 keepalive）
+  会被 `parseSse` 跳过，不再触发 `MALFORMED_RESPONSE` 中断；`[DONE]` 语义不变。
