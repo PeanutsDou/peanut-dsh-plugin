@@ -109,6 +109,10 @@ DSH 运行期间不动态加载新插件。改完插件后必须**重启 DSH 服
 
 ```text
 DSH 安装目录    : C:\Users\DELL\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh
+DSH 源码 checkout: C:\Users\DELL\AppData\Roaming\npm\node_modules\@deepseek-ai\deepseek-harness
+                  （2026-08-14 浅克隆 main 分支；查 API/服务名优先看这里的 packages/ TS 源码，
+                   比读编译产物快。源码启动：pnpm install && pnpm run build && pnpm dsh web，
+                   注意版本可能比安装版新、配置与 ~/.dsh 共享，实验建议用独立 DSH_HOME + 独立端口）
 DSH 服务包源码  : <DSH 安装目录>\node_modules\@deepseek-ai\dsh-<包名>\lib\index.js
 profile 目录    : C:\Users\DELL\.dsh\profiles\<profile>\
 插件部署目录    : C:\Users\DELL\.dsh\profiles\<profile>\node_modules\@<scope>\<name>\
