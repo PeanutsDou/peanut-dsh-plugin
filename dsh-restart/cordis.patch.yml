@@ -1,0 +1,5 @@
+# dsh-restart bundle patch —— 挂载 host 半（client 半经 dsh.client 清单被 client-modules 扫描发现）。
+- insert:
+    - id: dsh-restart
+      name: dsh-restart
+      config: {}
