@@ -1,0 +1,450 @@
+/**
+ * dsh-usage-monitor — client half.
+ *
+ * Registers one entry into the frame-wide `shell.overlay` slot: a bottom
+ * status bar (balance / today tokens / cache hit) plus a click-opened floating
+ * panel with day/month/all-time details, recent history, and per-session top
+ * consumers. A small settings card exposes balance polling knobs.
+ */
+import { useEffect, useRef, useState } from 'react'
+import type { ClientContext, SettingsScope, SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+import type {} from '@deepseek-ai/dsh-client-ui-slots'
+
+export const name = 'dsh-usage-monitor-client'
+export const inject = ['slots', 'settingsScope']
+
+interface Buckets {
+  uncachedInputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+}
+
+interface StatusData {
+  ok: boolean
+  generatedAt: number
+  balance: {
+    ok: boolean
+    available?: boolean
+    currency?: string
+    total?: number
+    granted?: number
+    toppedUp?: number
+    fetchedAt: number
+    error?: string
+  }
+  usage: {
+    today: Buckets
+    month: Buckets
+    allTime: Buckets
+    todayCacheHitRate: number | null
+    monthCacheHitRate: number | null
+    allTimeCacheHitRate: number | null
+    days: Array<{ date: string; buckets: Buckets }>
+    months: Array<{ month: string; buckets: Buckets }>
+    topSessions: Array<{ id: string; label: string; buckets: Buckets; tokens: number }>
+  }
+}
+
+interface SettingsSnapshot {
+  available: boolean
+  writable: boolean
+  balanceUrl: string
+  credentialRef: string
+  balancePollMinutes: number
+}
+
+const zero: Buckets = { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+
+function ensureStyles(): void {
+  const id = 'dsh-usage-monitor-styles'
+  if (document.getElementById(id) !== null) return
+  const style = document.createElement('style')
+  style.id = id
+  style.textContent = `
+.dsh-usage-bar{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);z-index:1200;display:flex;align-items:center;gap:10px;max-width:min(92vw,640px);padding:6px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 92%,transparent);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;box-shadow:0 8px 30px rgba(0,0,0,.18);cursor:pointer;backdrop-filter:blur(8px);user-select:none}
+.dsh-usage-bar:hover{border-color:var(--dsw-alias-label-dimmed)}
+.dsh-usage-bar:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+.dsh-usage-dot{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-success,#22c55e);flex:none}
+.dsh-usage-dot.err{background:var(--dsw-alias-label-error,#ef4444)}
+.dsh-usage-bar-parts{display:flex;align-items:center;gap:8px;min-width:0;white-space:nowrap}
+.dsh-usage-panel{position:fixed;right:14px;bottom:48px;z-index:1200;width:min(92vw,460px);max-height:min(72vh,560px);overflow:auto;padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:16px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:0 20px 60px rgba(0,0,0,.28);font:13px/1.6 system-ui}
+.dsh-usage-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px;font-size:14px;font-weight:600}
+.dsh-usage-refresh{appearance:none;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:3px 10px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer}
+.dsh-usage-refresh:hover{border-color:var(--dsw-alias-label-dimmed)}
+.dsh-usage-section{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2)}
+.dsh-usage-section h3{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-tertiary);text-transform:none}
+.dsh-usage-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.dsh-usage-cell{min-width:0;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-3)}
+.dsh-usage-k{display:block;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.dsh-usage-v{display:block;font-size:13px;font-weight:600}
+.dsh-usage-table{width:100%;border-collapse:collapse;font-size:12px}
+.dsh-usage-table th,.dsh-usage-table td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--dsw-alias-border-l2)}
+.dsh-usage-table th:first-child,.dsh-usage-table td:first-child{text-align:left}
+.dsh-usage-table th{color:var(--dsw-alias-label-tertiary);font-weight:500}
+.dsh-usage-err{margin:0;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--dsw-alias-label-error,#ef4444) 14%,transparent);color:var(--dsw-alias-label-error,#ef4444)}
+.dsh-usage-card{list-style:none;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}
+.dsh-usage-card button{width:100%;appearance:none;border:0;background:none;font:inherit;color:inherit;text-align:left;cursor:pointer;padding:14px 16px}
+.dsh-usage-card-body{padding:0 16px 12px;display:flex;flex-direction:column;gap:10px}
+.dsh-usage-field{display:flex;flex-direction:column;gap:6px}
+.dsh-usage-field span{font-size:13px;font-weight:500}
+.dsh-usage-field input{height:34px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px}
+.dsh-usage-field input:disabled{opacity:.5}
+.dsh-usage-hint{margin:0;font-size:12px;color:var(--dsw-alias-label-tertiary)}
+@media(max-width:520px){.dsh-usage-grid{grid-template-columns:repeat(2,1fr)}}
+`
+  document.head.append(style)
+}
+
+function tokens(bucket: Buckets): number {
+  return bucket.uncachedInputTokens + bucket.outputTokens + bucket.cacheReadTokens + bucket.cacheWriteTokens
+}
+
+function billedInput(bucket: Buckets): number {
+  return bucket.uncachedInputTokens + bucket.cacheReadTokens + bucket.cacheWriteTokens
+}
+
+function fmtTokens(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0'
+  if (value < 10000) return String(Math.round(value))
+  return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+}
+
+function fmtMoney(value: number | undefined, currency: string | undefined): string {
+  if (value === undefined) return '—'
+  const symbol = currency === 'USD' ? '$' : '¥'
+  return `${symbol}${value.toFixed(2)}`
+}
+
+function fmtPercent(rate: number | null): string {
+  return rate === null ? '—' : `${Math.round(rate * 100)}%`
+}
+
+function fmtTime(ts: number): string {
+  if (!ts) return '—'
+  const d = new Date(ts)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="dsh-usage-cell">
+      <span className="dsh-usage-k">{label}</span>
+      <span className="dsh-usage-v">{value}</span>
+    </div>
+  )
+}
+
+function HistoryTable({ rows, keyLabel }: { rows: Array<{ date?: string; month?: string; buckets: Buckets }>; keyLabel: string }) {
+  return (
+    <table className="dsh-usage-table">
+      <thead>
+        <tr>
+          <th>{keyLabel}</th>
+          <th>输入</th>
+          <th>输出</th>
+          <th>缓存读</th>
+          <th>合计</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(row => {
+          const key = row.date ?? row.month ?? ''
+          const b = row.buckets ?? zero
+          return (
+            <tr key={key}>
+              <td>{key}</td>
+              <td>{fmtTokens(billedInput(b))}</td>
+              <td>{fmtTokens(b.outputTokens)}</td>
+              <td>{fmtTokens(b.cacheReadTokens)}</td>
+              <td>{fmtTokens(tokens(b))}</td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  )
+}
+
+function DetailPanel({ status, loading, onClose, onRefresh }: {
+  status: StatusData | null
+  loading: boolean
+  onClose: () => void
+  onRefresh: () => void
+}) {
+  const ref = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const onPointer = (event: MouseEvent) => {
+      if (ref.current !== null && event.target instanceof Node && !ref.current.contains(event.target)) onClose()
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', onPointer)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onPointer)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [onClose])
+
+  const balance = status?.balance
+  const usage = status?.usage
+
+  return (
+    <div className="dsh-usage-panel" ref={ref} role="dialog" aria-label="DSH 用量与余额">
+      <h2 className="dsh-usage-title">
+        <span>API 用量与余额</span>
+        <button type="button" className="dsh-usage-refresh" disabled={loading} onClick={onRefresh}>
+          {loading ? '刷新中…' : '刷新余额'}
+        </button>
+      </h2>
+
+      {balance?.ok === false ? <p className="dsh-usage-err">余额：{balance.error ?? '查询失败'}（{fmtTime(balance.fetchedAt)}）</p> : null}
+      {balance?.ok === true ? (
+        <div className="dsh-usage-grid">
+          <Stat label="余额" value={fmtMoney(balance.total, balance.currency)} />
+          <Stat label="充值" value={fmtMoney(balance.toppedUp, balance.currency)} />
+          <Stat label="赠送" value={fmtMoney(balance.granted, balance.currency)} />
+        </div>
+      ) : null}
+
+      <section className="dsh-usage-section">
+        <h3>今日</h3>
+        <div className="dsh-usage-grid">
+          <Stat label="输入(计费)" value={usage ? fmtTokens(billedInput(usage.today)) : '—'} />
+          <Stat label="输出" value={usage ? fmtTokens(usage.today.outputTokens) : '—'} />
+          <Stat label="缓存命中" value={usage ? fmtPercent(usage.todayCacheHitRate) : '—'} />
+        </div>
+      </section>
+
+      <section className="dsh-usage-section">
+        <h3>本月 / 累计</h3>
+        <div className="dsh-usage-grid">
+          <Stat label="本月输入" value={usage ? fmtTokens(billedInput(usage.month)) : '—'} />
+          <Stat label="本月输出" value={usage ? fmtTokens(usage.month.outputTokens) : '—'} />
+          <Stat label="本月缓存" value={usage ? fmtPercent(usage.monthCacheHitRate) : '—'} />
+          <Stat label="累计输入" value={usage ? fmtTokens(billedInput(usage.allTime)) : '—'} />
+          <Stat label="累计输出" value={usage ? fmtTokens(usage.allTime.outputTokens) : '—'} />
+          <Stat label="累计缓存" value={usage ? fmtPercent(usage.allTimeCacheHitRate) : '—'} />
+        </div>
+      </section>
+
+      {usage && usage.days.length > 0 ? (
+        <section className="dsh-usage-section">
+          <h3>最近 7 天</h3>
+          <HistoryTable rows={usage.days as Array<{ date?: string; month?: string; buckets: Buckets }>} keyLabel="日期" />
+        </section>
+      ) : null}
+
+      {usage && usage.months.length > 0 ? (
+        <section className="dsh-usage-section">
+          <h3>最近 12 个月</h3>
+          <HistoryTable rows={usage.months as Array<{ date?: string; month?: string; buckets: Buckets }>} keyLabel="月份" />
+        </section>
+      ) : null}
+
+      {usage && usage.topSessions.length > 0 ? (
+        <section className="dsh-usage-section">
+          <h3>会话消耗 Top {usage.topSessions.length}</h3>
+          <table className="dsh-usage-table">
+            <thead>
+              <tr>
+                <th>会话</th>
+                <th>输入</th>
+                <th>输出</th>
+                <th>合计</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usage.topSessions.map(row => (
+                <tr key={row.id}>
+                  <td>{row.label}</td>
+                  <td>{fmtTokens(billedInput(row.buckets))}</td>
+                  <td>{fmtTokens(row.buckets.outputTokens)}</td>
+                  <td>{fmtTokens(row.tokens)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+    </div>
+  )
+}
+
+function UsageMonitor(): JSX.Element {
+  const [status, setStatus] = useState<StatusData | null>(null)
+  const [open, setOpen] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+
+  useEffect(() => {
+    let disposed = false
+    const controller = new AbortController()
+    const load = async () => {
+      try {
+        const response = await fetch('/plugins/dsh-usage-monitor/status', { cache: 'no-store', signal: controller.signal })
+        if (!response.ok) return
+        const data = await response.json() as StatusData
+        if (!disposed) setStatus(data)
+      } catch {
+        /* transient network / restart — keep last snapshot */
+      }
+    }
+    void load()
+    const timer = setInterval(() => { void load() }, open ? 3000 : 5000)
+    return () => {
+      disposed = true
+      controller.abort()
+      clearInterval(timer)
+    }
+  }, [open])
+
+  const refreshBalance = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    try {
+      const response = await fetch('/plugins/dsh-usage-monitor/refresh-balance', {
+        method: 'POST',
+        cache: 'no-store',
+      })
+      if (response.ok) {
+        const data = await response.json() as StatusData
+        setStatus(data)
+      }
+    } catch {
+      /* keep current */
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  const usage = status?.usage
+  const balance = status?.balance
+  const balanceText = balance?.ok === true
+    ? fmtMoney(balance.total, balance.currency)
+    : '余额 —'
+  const todayText = usage ? `今日 ${fmtTokens(billedInput(usage.today))} in / ${fmtTokens(usage.today.outputTokens)} out` : '用量加载中'
+  const hitText = usage?.todayCacheHitRate !== undefined ? `缓存 ${fmtPercent(usage.todayCacheHitRate)}` : ''
+
+  return (
+    <>
+      {open ? (
+        <DetailPanel
+          status={status}
+          loading={refreshing}
+          onClose={() => { setOpen(false) }}
+          onRefresh={() => { void refreshBalance() }}
+        />
+      ) : null}
+      <button
+        type="button"
+        className="dsh-usage-bar"
+        aria-expanded={open}
+        aria-label="DSH API 用量与余额"
+        onClick={() => { setOpen(!open) }}
+      >
+        <span className={balance?.ok === false ? 'dsh-usage-dot err' : 'dsh-usage-dot'} />
+        <span className="dsh-usage-bar-parts">{balanceText}</span>
+        <span className="dsh-usage-bar-parts">{todayText}</span>
+        {hitText ? <span className="dsh-usage-bar-parts">{hitText}</span> : null}
+      </button>
+    </>
+  )
+}
+
+function UsageSettingsCard(props: {
+  useUsageMonitor: <R>(selector: (snapshot: SettingsSnapshot) => R) => R
+  set: (field: string, value: unknown) => void
+  clear: (field: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const state = props.useUsageMonitor(snapshot => snapshot)
+  if (!state.available) return null
+  const disabled = !state.writable
+  const text = (field: string, value: string): void => {
+    const trimmed = value.trim()
+    if (trimmed === '') props.clear(field)
+    else props.set(field, trimmed)
+  }
+  const minutes = (field: string, value: string): void => {
+    if (value.trim() === '') { props.clear(field); return }
+    const parsed = Number(value)
+    if (Number.isFinite(parsed) && parsed > 0) props.set(field, Math.round(parsed * 60000))
+  }
+
+  return (
+    <li className="dsh-usage-card">
+      <button type="button" aria-expanded={open} onClick={() => { setOpen(!open) }}>
+        <span style={{ fontWeight: 600 }}>API 用量监控</span>
+        <div style={{ marginTop: 4, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>
+          底部状态栏、余额轮询与 token 日/月记账配置
+        </div>
+      </button>
+      {open ? (
+        <div className="dsh-usage-card-body">
+          <label className="dsh-usage-field">
+            <span>余额 API 地址</span>
+            <input type="text" value={state.balanceUrl} disabled={disabled} onChange={event => { text('balanceUrl', event.currentTarget.value) }} />
+            <p className="dsh-usage-hint">官方 DeepSeek 默认 https://api.deepseek.com，自定义网关按需修改。</p>
+          </label>
+          <label className="dsh-usage-field">
+            <span>凭证引用</span>
+            <input type="text" value={state.credentialRef} disabled={disabled} onChange={event => { text('credentialRef', event.currentTarget.value) }} />
+            <p className="dsh-usage-hint">从 DSH credentials 服务解析的环境变量名，默认 DEEPSEEK_API_KEY。</p>
+          </label>
+          <label className="dsh-usage-field">
+            <span>余额轮询间隔（分钟）</span>
+            <input type="number" min="1" value={state.balancePollMinutes || ''} disabled={disabled} onChange={event => { minutes('balancePollMs', event.currentTarget.value) }} />
+            <p className="dsh-usage-hint">默认 10 分钟；不建议低于 1 分钟。</p>
+          </label>
+          {!state.writable ? <p className="dsh-usage-hint">当前设置只读。</p> : null}
+        </div>
+      ) : null}
+    </li>
+  )
+}
+
+export function apply(ctx: ClientContext): void {
+  ensureStyles()
+
+  ctx.effect(() => ctx.slots.register({
+    name: 'shell.overlay',
+    id: 'dsh-usage-monitor-status',
+  }, UsageMonitor), 'dsh-usage-monitor: overlay status bar')
+
+  try {
+    const scope = ctx.settingsScope.bind({ namespace: 'dsh-usage-monitor' }) as SettingsScope<unknown>
+    const project = (): SettingsSnapshot => {
+      const snap = scope.getSnapshot()
+      const value = (snap.value ?? {}) as Record<string, unknown>
+      return {
+        available: snap.status === 'ready',
+        writable: snap.writable,
+        balanceUrl: typeof value.balanceUrl === 'string' ? value.balanceUrl : '',
+        credentialRef: typeof value.credentialRef === 'string' ? value.credentialRef : '',
+        balancePollMinutes: typeof value.balancePollMs === 'number' ? Math.max(1, Math.round(value.balancePollMs / 60000)) : 10,
+      }
+    }
+    const store: SnapshotStore<SettingsSnapshot> = createSnapshotStore(project())
+    scope.subscribe(() => { store.set(project()) })
+    ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
+      name: 'settings.plugin.item',
+      id: 'dsh-usage-monitor',
+      order: 50,
+      inject: () => ({
+        hooks: { usageMonitor: store },
+        set: (field: string, value: unknown) => { void scope.set(field, value) },
+        clear: (field: string) => { void scope.unset(field) },
+      }),
+    }, UsageSettingsCard))
+  } catch (error) {
+    console.error('[dsh-usage-monitor] settings card unavailable:', error)
+  }
+}

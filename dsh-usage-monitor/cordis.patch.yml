@@ -1,0 +1,5 @@
+# dsh-usage-monitor bundle patch —— host 半挂载；client 半经 dsh.client 清单被扫描发现。
+- insert:
+    - id: dsh-usage-monitor
+      name: '@peanutsdou/dsh-usage-monitor'
+      config: {}

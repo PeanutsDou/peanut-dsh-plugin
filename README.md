@@ -11,6 +11,7 @@ DeepSeek Harness（DSH）个人插件合集——集中管理我自己维护的 
 | [dsh-schedule-ui](dsh-schedule-ui) | 定时任务管理：会话级持久化任务 + 日历循环规则（daily/weekly/monthly/yearly）+ 浏览器第三页签 UI + `schedule_task` 模型工具 | ✅ 可用 |
 | [dsh-file-launcher](dsh-file-launcher) | 双击 Ctrl 全盘文件名搜索：Everything 引擎（es.exe）+ 自包含搜索框 UI + 收藏/常用打分 | ✅ 可用 |
 | [dsh-restart](dsh-restart) | DSH 自重启：`restart_harness` / `restart_with_tasks`（停机离线任务），端口释放检测、重试与诊断日志 | ✅ 可用 |
+| [dsh-usage-monitor](dsh-usage-monitor) | API 余额 + token 日/月用量监控：底部状态栏、悬浮详情窗、缓存命中统计 | ✅ 可用 |
 | [anchored-standard](anchored-standard) | Anchored Standard agent preset 快照备份（上游 [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard)） | ✅ 备份 |
 
 ## 目录约定
