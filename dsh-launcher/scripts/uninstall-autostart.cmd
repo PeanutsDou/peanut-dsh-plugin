@@ -3,14 +3,19 @@ setlocal
 
 rem Remove the autostart entry and desktop shortcuts created by dsh-launcher.
 
-rem 1) Startup-folder entry (the actual autostart mechanism)
+rem 1) Startup-folder entries (the actual autostart mechanism). Both historical
+rem    file names are covered: the old start-dsh.vbs and the newer
+rem    dsh-autostart.vbs that also starts the tray shell.
 set "STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
-if exist "%STARTUP%\start-dsh.vbs" (
-  del /q "%STARTUP%\start-dsh.vbs"
-  echo [OK] Removed autostart entry: "%STARTUP%\start-dsh.vbs"
-) else (
-  echo [SKIP] No autostart entry in the Startup folder.
+set "REMOVED=0"
+for %%F in ("%STARTUP%\start-dsh.vbs" "%STARTUP%\dsh-autostart.vbs") do (
+  if exist "%%~F" (
+    del /q "%%~F"
+    echo [OK] Removed autostart entry: "%%~F"
+    set "REMOVED=1"
+  )
 )
+if not "%REMOVED%"=="1" echo [SKIP] No dsh-launcher autostart entry in the Startup folder.
 
 rem 2) Desktop shortcuts (any name starting with DshWeb / DeepSeek Harness,
 rem    also checks the OneDrive-redirected Desktop)

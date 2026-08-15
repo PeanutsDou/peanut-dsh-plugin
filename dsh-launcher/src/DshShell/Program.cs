@@ -21,6 +21,7 @@ internal static class Program
     private const int WM_KEYDOWN = 0x0100;
     private const int WM_KEYUP = 0x0101;
     private const int VK_CONTROL = 0x11;
+    private const int VK_LCONTROL = 0xA2;
     private const int VK_RCONTROL = 0xA3;
     private const int TRIGGER_WINDOW_MS = 500;
     private const int TRIGGER_COOLDOWN_MS = 300;
@@ -32,6 +33,7 @@ internal static class Program
     private static NotifyIcon? _notifyIcon;
     private static Icon? _appIcon;
     private static bool _forceExit;
+    private static bool _startInTray;
     private static int _wmShowMain;
     private static bool _closePromptShowing;
 
@@ -43,6 +45,10 @@ internal static class Program
     // 键盘钩子句柄 + 委托（static 字段保持引用，防止被 GC）
     private static LowLevelKeyboardProc? _keyboardProc;
     private static IntPtr _hookId = IntPtr.Zero;
+
+    // 文件搜索框 overlay（双击 Ctrl 唤起）
+    private static Form? _launcherForm;
+    private static WebView2? _launcherWeb;
 
     private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
@@ -95,8 +101,12 @@ internal static class Program
     private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        // --tray：开机自启时静默启动到托盘（不显示主窗口），双击 Ctrl 直接可用
+        _startInTray = args is not null
+            && Array.Exists(args, a => a == "--tray" || a == "-tray" || a == "--minimized");
+
         // PerMonitorV2：按真实屏幕 DPI 渲染。否则进程 DPI 不感知，Windows 会把 100% 画面
         // 位图拉伸到 125%+，整个 Web UI 看起来发糊。必须最先调用、早于任何窗口创建。
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -157,7 +167,8 @@ internal static class Program
             StartPosition = FormStartPosition.CenterScreen,
             MinimumSize = new Size(800, 600),
             WindowState = FormWindowState.Maximized,
-            Icon = _appIcon ?? SystemIcons.Application
+            Icon = _appIcon ?? SystemIcons.Application,
+            Opacity = _startInTray ? 0 : 1
         };
         _mainForm = form;
         form.ShowRequested = () => ShowMainForm(form);
@@ -213,6 +224,8 @@ internal static class Program
                 "DshWeb", "WebView2");
             await InitWebViewAsync(web, userDataFolder);
             web.CoreWebView2.Navigate(Url);
+            // 托盘启动：主窗口 WebView2 就绪后立即隐藏到托盘
+            if (_startInTray) HideToTray();
         };
 
         SetupTray(form);
@@ -247,6 +260,7 @@ internal static class Program
     private static void ShowMainForm(Form form)
     {
         DebugLog($"ShowMainForm called, state={form.WindowState} visible={form.Visible}");
+        form.Opacity = 1;
         form.Show();
         // 注意：不要改 form.ShowInTaskbar！它会触发 RecreateHandle 销毁重建窗口句柄，
         // 导致 WebView2 内容丢失 + 白屏。窗口 Show 后任务栏按钮自然恢复。
@@ -382,7 +396,7 @@ internal static class Program
         if (nCode >= 0)
         {
             var vkCode = Marshal.ReadInt32(lParam);
-            var isCtrl = vkCode is VK_CONTROL or VK_RCONTROL;
+            var isCtrl = vkCode is VK_CONTROL or VK_LCONTROL or VK_RCONTROL;
             if (isCtrl)
             {
                 if (wParam == (IntPtr)WM_KEYDOWN)
@@ -397,7 +411,8 @@ internal static class Program
                         if (withinDoubleTap && outsideCooldown)
                         {
                             _lastTriggeredAt = now;
-                            BringWindowToFront();
+                            DebugLog("double-Ctrl triggered -> ToggleLauncher");
+                            ToggleLauncher();
                         }
                     }
                 }
@@ -425,6 +440,179 @@ internal static class Program
         // 注意：不要改 form.ShowInTaskbar（RecreateHandle 销毁重建 → 白屏），见 ShowMainForm。
         form.Activate();
         SetForegroundWindow(form.Handle);
+    }
+
+    // ===== 文件搜索框 overlay（双击 Ctrl 唤起） =====
+
+    private const int LauncherWidth = 560;
+    private const int LauncherCollapsedHeight = 50;
+    private const int LauncherCornerRadius = 14;
+
+    private static void ToggleLauncher()
+    {
+        // 键盘钩子回调运行在 UI 线程，但保险起见跨线程时封送到主窗体线程
+        var main = _mainForm;
+        if (main is not null && !main.IsDisposed && main.InvokeRequired)
+        {
+            main.BeginInvoke(ToggleLauncher);
+            return;
+        }
+        var form = _launcherForm;
+        if (form is null || form.IsDisposed)
+        {
+            CreateLauncher();
+            return;
+        }
+        if (form.Visible) HideLauncher();
+        else ShowLauncher();
+    }
+
+    private static void ShowLauncher()
+    {
+        var form = _launcherForm;
+        if (form is null || form.IsDisposed) { CreateLauncher(); return; }
+        if (!form.Visible)
+        {
+            ResizeLauncher(LauncherCollapsedHeight);
+            PlaceLauncher(form);
+            form.Show();
+        }
+        // 每次唤起重新加载页面（让 launcher.html 的改动即时生效，无需重启）
+        try { _launcherWeb?.CoreWebView2?.Navigate(Url + "/file-launcher"); } catch { /* ignore */ }
+        form.Activate();
+        SetForegroundWindow(form.Handle);
+        try { _launcherWeb?.Focus(); } catch { /* ignore */ }
+    }
+
+    private static void HideLauncher()
+    {
+        var form = _launcherForm;
+        if (form is null || form.IsDisposed) return;
+        form.Hide();
+    }
+
+    private static void PlaceLauncher(Form form)
+    {
+        try
+        {
+            var area = Screen.FromPoint(Cursor.Position).WorkingArea;
+            form.Location = new Point(
+                area.Left + (area.Width - form.Width) / 2,
+                area.Top + (int)(area.Height * 0.15));
+        }
+        catch { /* 保持 CenterScreen 默认 */ }
+    }
+
+    private static void ApplyRoundedRegion(Form form)
+    {
+        try
+        {
+            var d = LauncherCornerRadius * 2;
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            path.AddArc(0, 0, d, d, 180, 90);
+            path.AddArc(form.Width - d, 0, d, d, 270, 90);
+            path.AddArc(form.Width - d, form.Height - d, d, d, 0, 90);
+            path.AddArc(0, form.Height - d, d, d, 90, 90);
+            path.CloseFigure();
+            form.Region = new Region(path);
+        }
+        catch { /* ignore */ }
+    }
+
+    private static void ResizeLauncher(int height)
+    {
+        var form = _launcherForm;
+        if (form is null || form.IsDisposed) return;
+        if (form.InvokeRequired)
+        {
+            form.BeginInvoke(() => ResizeLauncher(height));
+            return;
+        }
+        var h = Math.Max(LauncherCollapsedHeight, Math.Min(520, height));
+        form.ClientSize = new Size(LauncherWidth, h);
+        ApplyRoundedRegion(form);
+    }
+
+    private static void HandleLauncherMessage(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+            if (type == "close")
+            {
+                HideLauncher();
+            }
+            else if (type == "resize")
+            {
+                var h = root.TryGetProperty("height", out var hv) && hv.TryGetInt32(out var n)
+                    ? n
+                    : LauncherCollapsedHeight;
+                ResizeLauncher(h);
+            }
+        }
+        catch { /* ignore */ }
+    }
+
+    private static void CreateLauncher()
+    {
+        DebugLog("CreateLauncher called");
+        var form = new Form
+        {
+            Text = "文件搜索",
+            ClientSize = new Size(LauncherWidth, LauncherCollapsedHeight),
+            FormBorderStyle = FormBorderStyle.None,
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.CenterScreen,
+            TopMost = true,
+            KeyPreview = true,
+        };
+        var web = new WebView2 { Dock = DockStyle.Fill };
+        form.Controls.Add(web);
+        _launcherForm = form;
+        _launcherWeb = web;
+
+        form.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Escape) HideLauncher();
+        };
+
+        // 关闭时仅隐藏，不销毁（下次唤起更快）
+        form.FormClosing += (_, e) =>
+        {
+            e.Cancel = true;
+            HideLauncher();
+        };
+
+        form.Load += async (_, _) =>
+        {
+            try
+            {
+                var userDataFolder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "DshWeb", "WebView2");
+                await InitWebViewAsync(web, userDataFolder);
+                web.CoreWebView2.WebMessageReceived += (_, e) =>
+                {
+                    try
+                    {
+                        HandleLauncherMessage(e.WebMessageAsJson);
+                    }
+                    catch { /* ignore */ }
+                };
+                ApplyRoundedRegion(form);
+                web.CoreWebView2.Navigate(Url + "/file-launcher");
+            }
+            catch (Exception ex)
+            {
+                DebugLog($"launcher init failed: {ex.Message}");
+            }
+        };
+
+        ShowLauncher();
+        DebugLog("launcher shown");
     }
 
     // ===== 退出时杀掉 DSH 服务 =====

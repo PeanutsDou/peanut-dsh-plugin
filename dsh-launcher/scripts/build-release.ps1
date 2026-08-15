@@ -36,7 +36,7 @@ if (Test-Path (Join-Path $publishDir "runtimes")) {
     Copy-Item (Join-Path $publishDir "runtimes") $distDir -Recurse
 }
 # ship all runtime scripts so the deploy folder is self-contained
-foreach ($script in "start-dsh.vbs", "start-dsh.cmd", "dsh-web.cmd", "uninstall-autostart.cmd") {
+foreach ($script in "start-dsh.vbs", "dsh-autostart.vbs", "start-dsh.cmd", "dsh-web.cmd", "uninstall-autostart.cmd") {
     Copy-Item (Join-Path $root "scripts\$script") $distDir
 }
 

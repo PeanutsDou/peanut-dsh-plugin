@@ -7,7 +7,8 @@ DeepSeek Harness 的 Windows 桌面壳：把 Web UI 装进独立的 WebView2 窗
 ## 特性（继承自上游）
 
 - **独立窗口**：C# WinForms + WebView2 单文件壳（约 1MB），界面即 DSH Web UI 原样呈现
-- **开机自启**：`start-dsh.vbs` 放启动文件夹，登录后静默拉起 `dsh web`（不弹窗）
+- **开机自启**：`dsh-autostart.vbs` 放启动文件夹，登录后静默启动托盘壳；DshWeb 检测到 3080 未监听时用同目录 `start-dsh.vbs` 拉起服务（绝对路径 node/bin.js，不依赖登录时的 PATH），最多等 90s
+- **自启诊断**：每次自启写一行 `%LOCALAPPDATA%\DshWeb\autostart.log`，排查"开机没起来"先看这个文件
 - **单实例**：重复双击只把已有窗口带到前台
 - **自动拉起服务**：启动时探测 3080 端口，未运行则自动启动 dsh，最长等 90s
 - **下载/弹窗策略、渲染崩溃自愈**
@@ -32,9 +33,9 @@ dotnet publish src/DshShell/DshShell.csproj -c Release -r win-x64 --self-contain
 ## 安装
 
 1. 全局安装 dsh：`npm install -g @deepseek-ai/dsh`
-2. 把 `dist/` 与 `scripts/start-dsh.vbs` 放到同一目录（如 `%LOCALAPPDATA%\Programs\dsh-launcher`）
+2. 把 `dist/` 与 `scripts/` 放到同一目录（如 `%LOCALAPPDATA%\Programs\dsh-launcher`）
 3. 双击 `DshWeb.exe`；右键发送桌面快捷方式
-4. （可选）开机自启：把 `scripts/start-dsh.vbs` 复制到 `shell:startup`
+4. （可选）开机自启：把 `scripts/dsh-autostart.vbs` 复制到 `shell:startup`（只启动托盘壳，服务由 DshWeb 按需拉起，不会重复启动两个 `dsh web`）
 
 > 端口默认 3080。改端口需同步改 `scripts/start-dsh.vbs` 与 `Program.cs` 中的常量。
 
