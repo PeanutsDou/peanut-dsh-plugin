@@ -6,7 +6,7 @@
  * panel with day/month/all-time details, recent history, and per-session top
  * consumers. A small settings card exposes balance polling knobs.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ClientContext, SettingsScope, SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
@@ -66,13 +66,15 @@ function ensureStyles(): void {
   const style = document.createElement('style')
   style.id = id
   style.textContent = `
-.dsh-usage-bar{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);z-index:1200;display:flex;align-items:center;gap:10px;max-width:min(92vw,640px);padding:6px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 92%,transparent);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;box-shadow:0 8px 30px rgba(0,0,0,.18);cursor:pointer;backdrop-filter:blur(8px);user-select:none}
+.dsh-usage-dock{position:fixed;z-index:1200;display:flex;flex-direction:column;align-items:flex-end;pointer-events:none}
+.dsh-usage-bar{position:relative;display:flex;align-items:center;gap:10px;max-width:min(92vw,640px);padding:6px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 92%,transparent);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;box-shadow:0 8px 30px rgba(0,0,0,.18);cursor:grab;pointer-events:auto;touch-action:none;backdrop-filter:blur(8px);user-select:none}
+.dsh-usage-bar.dragging{cursor:grabbing;border-color:var(--dsw-alias-brand-primary)}
 .dsh-usage-bar:hover{border-color:var(--dsw-alias-label-dimmed)}
 .dsh-usage-bar:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
 .dsh-usage-dot{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-success,#22c55e);flex:none}
 .dsh-usage-dot.err{background:var(--dsw-alias-label-error,#ef4444)}
 .dsh-usage-bar-parts{display:flex;align-items:center;gap:8px;min-width:0;white-space:nowrap}
-.dsh-usage-panel{position:fixed;right:14px;bottom:48px;z-index:1200;width:min(92vw,460px);max-height:min(72vh,560px);overflow:auto;padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:16px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:0 20px 60px rgba(0,0,0,.28);font:13px/1.6 system-ui}
+.dsh-usage-panel{position:absolute;z-index:1200;width:min(92vw,460px);max-height:min(72vh,560px);overflow:auto;padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:16px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:0 20px 60px rgba(0,0,0,.28);font:13px/1.6 system-ui;pointer-events:auto}
 .dsh-usage-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px;font-size:14px;font-weight:600}
 .dsh-usage-refresh{appearance:none;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:3px 10px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer}
 .dsh-usage-refresh:hover{border-color:var(--dsw-alias-label-dimmed)}
@@ -171,11 +173,13 @@ function HistoryTable({ rows, keyLabel }: { rows: Array<{ date?: string; month?:
   )
 }
 
-function DetailPanel({ status, loading, onClose, onRefresh }: {
+function DetailPanel({ status, loading, onClose, onRefresh, anchorLeft, openUp }: {
   status: StatusData | null
   loading: boolean
   onClose: () => void
   onRefresh: () => void
+  anchorLeft: boolean
+  openUp: boolean
 }) {
   const ref = useRef<HTMLDivElement | null>(null)
 
@@ -198,7 +202,18 @@ function DetailPanel({ status, loading, onClose, onRefresh }: {
   const usage = status?.usage
 
   return (
-    <div className="dsh-usage-panel" ref={ref} role="dialog" aria-label="DSH 用量与余额">
+    <div
+      className="dsh-usage-panel"
+      ref={ref}
+      role="dialog"
+      aria-label="DSH 用量与余额"
+      style={{
+        ...(openUp
+          ? { top: 'auto', bottom: 'calc(100% + 10px)' }
+          : { top: 'calc(100% + 10px)', bottom: 'auto' }),
+        ...(anchorLeft ? { left: 0, right: 'auto' } : { left: 'auto', right: 0 }),
+      }}
+    >
       <h2 className="dsh-usage-title">
         <span>API 用量与余额</span>
         <button type="button" className="dsh-usage-refresh" disabled={loading} onClick={onRefresh}>
@@ -279,10 +294,75 @@ function DetailPanel({ status, loading, onClose, onRefresh }: {
   )
 }
 
+interface DockPosition {
+  right: number
+  bottom: number
+}
+
+const POSITION_KEY = 'dsh-usage-monitor-position'
+const DEFAULT_POSITION: DockPosition = { right: 16, bottom: 12 }
+const EDGE_GAP = 8
+
+function readPosition(): DockPosition {
+  try {
+    const raw = localStorage.getItem(POSITION_KEY)
+    if (raw === null) return { ...DEFAULT_POSITION }
+    const parsed = JSON.parse(raw) as Partial<DockPosition>
+    if (Number.isFinite(parsed.right) && Number.isFinite(parsed.bottom)
+      && Number(parsed.right) >= 0 && Number(parsed.bottom) >= 0) {
+      return { right: Number(parsed.right), bottom: Number(parsed.bottom) }
+    }
+  } catch { /* corrupted or storage unavailable */ }
+  return { ...DEFAULT_POSITION }
+}
+
+function persistPosition(position: DockPosition): void {
+  try { localStorage.setItem(POSITION_KEY, JSON.stringify(position)) } catch { /* storage unavailable */ }
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), Math.max(min, max))
+}
+
+function clampPosition(position: DockPosition, width: number, height: number): DockPosition {
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  return {
+    right: clampNumber(position.right, 0, Math.max(0, viewportWidth - width - EDGE_GAP)),
+    bottom: clampNumber(position.bottom, 0, Math.max(0, viewportHeight - height - EDGE_GAP)),
+  }
+}
+
 function UsageMonitor(): JSX.Element {
   const [status, setStatus] = useState<StatusData | null>(null)
   const [open, setOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const [position, setPosition] = useState<DockPosition>(() => readPosition())
+  const barRef = useRef<HTMLButtonElement | null>(null)
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; origin: DockPosition } | null>(null)
+  const movedRef = useRef(false)
+  const latestRef = useRef(position)
+  latestRef.current = position
+
+  const barSize = useCallback(() => ({
+    width: barRef.current?.offsetWidth ?? 640,
+    height: barRef.current?.offsetHeight ?? 34,
+  }), [])
+
+  useLayoutEffect(() => {
+    const size = barSize()
+    setPosition(current => clampPosition(current, size.width, size.height))
+  }, [barSize])
+
+  useEffect(() => {
+    const onResize = () => {
+      const size = barSize()
+      setPosition(current => clampPosition(current, size.width, size.height))
+    }
+    window.addEventListener('resize', onResize)
+    return () => { window.removeEventListener('resize', onResize) }
+  }, [barSize])
 
   useEffect(() => {
     let disposed = false
@@ -325,6 +405,43 @@ function UsageMonitor(): JSX.Element {
     }
   }
 
+  const onPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      origin: latestRef.current,
+    }
+    movedRef.current = false
+    setDragging(true)
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const onPointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current
+    if (drag === null || drag.pointerId !== event.pointerId) return
+    const dx = event.clientX - drag.startX
+    const dy = event.clientY - drag.startY
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) movedRef.current = true
+    const size = barSize()
+    const next = clampPosition({
+      right: drag.origin.right - dx,
+      bottom: drag.origin.bottom - dy,
+    }, size.width, size.height)
+    latestRef.current = next
+    setPosition(next)
+  }
+
+  const endDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current
+    if (drag === null || drag.pointerId !== event.pointerId) return
+    dragRef.current = null
+    setDragging(false)
+    persistPosition(latestRef.current)
+    try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* already released */ }
+  }
+
   const usage = status?.usage
   const balance = status?.balance
   const balanceText = balance?.ok === true
@@ -333,29 +450,48 @@ function UsageMonitor(): JSX.Element {
   const todayText = usage ? `今日 ${fmtTokens(billedInput(usage.today))} in / ${fmtTokens(usage.today.outputTokens)} out` : '用量加载中'
   const hitText = usage?.todayCacheHitRate !== undefined ? `缓存 ${fmtPercent(usage.todayCacheHitRate)}` : ''
 
+  const rect = barRef.current?.getBoundingClientRect()
+  const anchorLeft = rect === undefined ? false : rect.left + rect.width / 2 < window.innerWidth / 2
+  const openUp = position.bottom < window.innerHeight / 2
+
   return (
-    <>
+    <div className="dsh-usage-dock" style={{ right: position.right, bottom: position.bottom }}>
       {open ? (
         <DetailPanel
           status={status}
           loading={refreshing}
           onClose={() => { setOpen(false) }}
           onRefresh={() => { void refreshBalance() }}
+          anchorLeft={anchorLeft}
+          openUp={openUp}
         />
       ) : null}
       <button
+        ref={barRef}
         type="button"
-        className="dsh-usage-bar"
+        className={`dsh-usage-bar${dragging ? ' dragging' : ''}`}
         aria-expanded={open}
-        aria-label="DSH API 用量与余额"
-        onClick={() => { setOpen(!open) }}
+        aria-label="DSH API 用量与余额（可拖动）"
+        title="拖动可改变位置，点击查看详情"
+        onMouseDown={event => { event.stopPropagation() }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onClick={() => {
+          if (movedRef.current) {
+            movedRef.current = false
+            return
+          }
+          setOpen(current => !current)
+        }}
       >
         <span className={balance?.ok === false ? 'dsh-usage-dot err' : 'dsh-usage-dot'} />
         <span className="dsh-usage-bar-parts">{balanceText}</span>
         <span className="dsh-usage-bar-parts">{todayText}</span>
         {hitText ? <span className="dsh-usage-bar-parts">{hitText}</span> : null}
       </button>
-    </>
+    </div>
   )
 }
 

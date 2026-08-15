@@ -4,7 +4,7 @@ DSH API 余额与 token 用量监控插件：前端底部状态栏 + 点击展�
 
 ## 功能
 
-- **底部状态栏**（`shell.overlay`，不占三栏布局）：余额、今日输入/输出、缓存命中率；
+- **底部状态栏**（`shell.overlay`，不占三栏布局）：余额、今日输入/输出、缓存命中率；默认停靠右下角，**可拖动到界面任意位置**，位置保存在浏览器 `localStorage`，重启后保留；
 - **悬浮详情窗**：点击状态栏展开——余额明细、今日/本月/累计、最近 7 天、最近 12 个月、会话消耗 Top 5、手动刷新余额；
 - **token 记账**：监听 durable session 事件的 `assistant/chunk usage` / `assistant/message usage`，同一步骤后到的 usage 替换先到的（不双计）；按本地日期写入 `$DSH_HOME/usage-monitor/state.json`；
 - **缓存命中**：沿用 DSH token-meter 口径 `cacheRead / (uncachedInput + cacheRead + cacheWrite)`；
