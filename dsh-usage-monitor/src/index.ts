@@ -30,18 +30,52 @@ export interface UsageMonitorConfig {
   balanceUrl: string
   credentialRef: string
   balancePollMs: number
+  /** CNY per 1M tokens before the peak/off-peak schedule starts. */
+  priceCacheHitPerM: number
+  priceInputPerM: number
+  priceOutputPerM: number
+  /** Peak/off-peak schedule starts on this Beijing date (YYYY-MM-DD). */
+  priceEpoch: string
+  offPeakCacheHitPerM: number
+  offPeakInputPerM: number
+  offPeakOutputPerM: number
+  peakCacheHitPerM: number
+  peakInputPerM: number
+  peakOutputPerM: number
 }
 
 export const ConfigSchema: z<UsageMonitorConfig> = z.object({
   balanceUrl: z.string().default('https://api.deepseek.com'),
   credentialRef: z.string().default('DEEPSEEK_API_KEY'),
   balancePollMs: z.number().default(600000),
+  priceCacheHitPerM: z.number().default(0.025),
+  priceInputPerM: z.number().default(3),
+  priceOutputPerM: z.number().default(6),
+  priceEpoch: z.string().default('2026-08-17'),
+  offPeakCacheHitPerM: z.number().default(0.15),
+  offPeakInputPerM: z.number().default(4.5),
+  offPeakOutputPerM: z.number().default(13.5),
+  peakCacheHitPerM: z.number().default(0.3),
+  peakInputPerM: z.number().default(9),
+  peakOutputPerM: z.number().default(27),
 })
 
 export const DEFAULT_CONFIG: UsageMonitorConfig = {
   balanceUrl: 'https://api.deepseek.com',
   credentialRef: 'DEEPSEEK_API_KEY',
   balancePollMs: 600000,
+  // Official deepseek-v4-pro prices before 2026-08-17.
+  priceCacheHitPerM: 0.025,
+  priceInputPerM: 3,
+  priceOutputPerM: 6,
+  priceEpoch: '2026-08-17',
+  // Official deepseek-v4-pro peak/off-peak prices from 2026-08-17.
+  offPeakCacheHitPerM: 0.15,
+  offPeakInputPerM: 4.5,
+  offPeakOutputPerM: 13.5,
+  peakCacheHitPerM: 0.3,
+  peakInputPerM: 9,
+  peakOutputPerM: 27,
 }
 
 /** Provider-neutral token buckets (same vocabulary as the built-in token meter). */
@@ -52,6 +86,11 @@ export interface TokenBuckets {
   cacheWriteTokens: number
 }
 
+/** Token buckets plus estimated spend in CNY. */
+export interface CostedBuckets extends TokenBuckets {
+  costCny: number
+}
+
 /** Provider usage in the same shape as DSH's TokenUsage. */
 export interface TokenUsageLike {
   inputTokens: number
@@ -60,20 +99,20 @@ export interface TokenUsageLike {
   cacheWriteTokens?: number
 }
 
-interface SessionRow extends TokenBuckets {
+interface SessionRow extends CostedBuckets {
   id: string
   label: string
   updatedAt: number
 }
 
 export interface LedgerState {
-  version: 1
-  allTime: TokenBuckets
-  days: Record<string, TokenBuckets>
-  months: Record<string, TokenBuckets>
+  version: 2
+  allTime: CostedBuckets
+  days: Record<string, CostedBuckets>
+  months: Record<string, CostedBuckets>
   sessions: Record<string, SessionRow>
   /** Last buckets per `sessionId:turn:step`, used for replace-not-add folding. */
-  lastStep: Record<string, TokenBuckets>
+  lastStep: Record<string, CostedBuckets>
 }
 
 export interface BalanceSnapshot {
@@ -121,48 +160,116 @@ function stateFilePath(): string {
   return path.join(homeDir(), 'usage-monitor', 'state.json')
 }
 
-export function zeroBuckets(): TokenBuckets {
-  return { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
-}
-
-export function bucketsOf(usage: TokenUsageLike): TokenBuckets {
-  return {
-    uncachedInputTokens: nonNegativeInt(usage.inputTokens),
-    outputTokens: nonNegativeInt(usage.outputTokens),
-    cacheReadTokens: nonNegativeInt(usage.cacheReadTokens ?? 0),
-    cacheWriteTokens: nonNegativeInt(usage.cacheWriteTokens ?? 0),
-  }
+export function zeroBuckets(): CostedBuckets {
+  return { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costCny: 0 }
 }
 
 function nonNegativeInt(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
 }
 
-/** Signed bucket delta, clamped at zero so a provider revision can never erase history. */
-export function deltaBuckets(next: TokenBuckets, previous?: TokenBuckets): TokenBuckets {
+export function bucketsOf(usage: TokenUsageLike): CostedBuckets {
+  return {
+    uncachedInputTokens: nonNegativeInt(usage.inputTokens),
+    outputTokens: nonNegativeInt(usage.outputTokens),
+    cacheReadTokens: nonNegativeInt(usage.cacheReadTokens ?? 0),
+    cacheWriteTokens: nonNegativeInt(usage.cacheWriteTokens ?? 0),
+    costCny: 0,
+  }
+}
+
+export interface PricingRates {
+  cacheHit: number
+  input: number
+  output: number
+}
+
+const LEGACY_RATES: PricingRates = {
+  cacheHit: DEFAULT_CONFIG.priceCacheHitPerM,
+  input: DEFAULT_CONFIG.priceInputPerM,
+  output: DEFAULT_CONFIG.priceOutputPerM,
+}
+
+function beijingParts(date: Date): { dayKey: string; hour: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date)
+  const get = (type: string): string => parts.find(part => part.type === type)?.value ?? '0'
+  return {
+    dayKey: `${get('year')}-${get('month')}-${get('day')}`,
+    hour: Number(get('hour')),
+  }
+}
+
+function isPeakHour(hour: number): boolean {
+  return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18)
+}
+
+/**
+ * Effective CNY-per-1M pricing for one event:
+ *  - before `priceEpoch` use the legacy prices;
+ *  - after the epoch use the official Beijing peak/off-peak schedule.
+ */
+export function ratesForUsage(config: UsageMonitorConfig, at: Date): PricingRates {
+  const beijing = beijingParts(at)
+  if (beijing.dayKey < config.priceEpoch) {
+    return { cacheHit: config.priceCacheHitPerM, input: config.priceInputPerM, output: config.priceOutputPerM }
+  }
+  if (isPeakHour(beijing.hour)) {
+    return { cacheHit: config.peakCacheHitPerM, input: config.peakInputPerM, output: config.peakOutputPerM }
+  }
+  return { cacheHit: config.offPeakCacheHitPerM, input: config.offPeakInputPerM, output: config.offPeakOutputPerM }
+}
+
+/** Estimated spend for one usage sample. Cache-write tokens are billed as uncached input. */
+export function costForBuckets(tokens: TokenBuckets, rates: PricingRates): number {
+  const cny = (
+    (tokens.uncachedInputTokens + tokens.cacheWriteTokens) * rates.input
+    + tokens.cacheReadTokens * rates.cacheHit
+    + tokens.outputTokens * rates.output
+  ) / 1_000_000
+  return Math.round(cny * 1_000_000) / 1_000_000
+}
+
+/** Token + cost buckets for one usage sample at a point in time. */
+export function costedBucketsOf(usage: TokenUsageLike, at: Date, config: UsageMonitorConfig = DEFAULT_CONFIG): CostedBuckets {
+  const tokens = bucketsOf(usage)
+  return { ...tokens, costCny: costForBuckets(tokens, ratesForUsage(config, at)) }
+}
+
+/** Signed bucket delta (tokens and cost), clamped at zero so revisions cannot erase history. */
+export function deltaBuckets(next: CostedBuckets, previous?: CostedBuckets): CostedBuckets {
   const base = previous ?? zeroBuckets()
   return {
     uncachedInputTokens: Math.max(0, next.uncachedInputTokens - base.uncachedInputTokens),
     outputTokens: Math.max(0, next.outputTokens - base.outputTokens),
     cacheReadTokens: Math.max(0, next.cacheReadTokens - base.cacheReadTokens),
     cacheWriteTokens: Math.max(0, next.cacheWriteTokens - base.cacheWriteTokens),
+    costCny: Math.max(0, next.costCny - base.costCny),
   }
 }
 
-function addBuckets(target: TokenBuckets, delta: TokenBuckets): TokenBuckets {
+function addBuckets(target: CostedBuckets, delta: CostedBuckets): CostedBuckets {
   return {
     uncachedInputTokens: target.uncachedInputTokens + delta.uncachedInputTokens,
     outputTokens: target.outputTokens + delta.outputTokens,
     cacheReadTokens: target.cacheReadTokens + delta.cacheReadTokens,
     cacheWriteTokens: target.cacheWriteTokens + delta.cacheWriteTokens,
+    costCny: Math.round((target.costCny + delta.costCny) * 1_000_000) / 1_000_000,
   }
 }
 
-function isZero(delta: TokenBuckets): boolean {
+function isZero(delta: CostedBuckets): boolean {
   return delta.uncachedInputTokens === 0
     && delta.outputTokens === 0
     && delta.cacheReadTokens === 0
     && delta.cacheWriteTokens === 0
+    && delta.costCny === 0
 }
 
 function totalTokens(bucket: TokenBuckets): number {
@@ -192,22 +299,28 @@ function localMonthKey(date: Date): string {
   return `${y}-${m}`
 }
 
-function sanitizeBuckets(value: unknown): TokenBuckets {
+function sanitizeBuckets(value: unknown): CostedBuckets {
   const record = (value ?? {}) as Record<string, unknown>
-  return {
+  const tokens = {
     uncachedInputTokens: nonNegativeInt(Number(record.uncachedInputTokens)),
     outputTokens: nonNegativeInt(Number(record.outputTokens)),
     cacheReadTokens: nonNegativeInt(Number(record.cacheReadTokens)),
     cacheWriteTokens: nonNegativeInt(Number(record.cacheWriteTokens)),
   }
+  // v1 ledgers have no cost field: backfill with the pre-epoch legacy price.
+  const cost = Number(record.costCny)
+  return {
+    ...tokens,
+    costCny: Number.isFinite(cost) && cost >= 0 ? cost : costForBuckets(tokens, LEGACY_RATES),
+  }
 }
 
 function sanitizeLedger(value: unknown): LedgerState {
   const record = (value ?? {}) as Record<string, unknown>
-  const days: Record<string, TokenBuckets> = {}
-  const months: Record<string, TokenBuckets> = {}
+  const days: Record<string, CostedBuckets> = {}
+  const months: Record<string, CostedBuckets> = {}
   const sessions: Record<string, SessionRow> = {}
-  const lastStep: Record<string, TokenBuckets> = {}
+  const lastStep: Record<string, CostedBuckets> = {}
   for (const [key, raw] of Object.entries((record.days ?? {}) as Record<string, unknown>)) days[key] = sanitizeBuckets(raw)
   for (const [key, raw] of Object.entries((record.months ?? {}) as Record<string, unknown>)) months[key] = sanitizeBuckets(raw)
   for (const [key, raw] of Object.entries((record.sessions ?? {}) as Record<string, unknown>)) {
@@ -215,13 +328,13 @@ function sanitizeLedger(value: unknown): LedgerState {
     sessions[key] = {
       ...sanitizeBuckets(raw),
       id: typeof row.id === 'string' ? row.id : key,
-      label: typeof row.label === 'string' ? row.label : key.slice(0, 8),
+      label: typeof row.label === 'string' ? row.label : key.slice(0, 12),
       updatedAt: Number.isFinite(Number(row.updatedAt)) ? Number(row.updatedAt) : 0,
     }
   }
   for (const [key, raw] of Object.entries((record.lastStep ?? {}) as Record<string, unknown>)) lastStep[key] = sanitizeBuckets(raw)
   return {
-    version: 1,
+    version: 2,
     allTime: sanitizeBuckets(record.allTime),
     days,
     months,
@@ -232,7 +345,7 @@ function sanitizeLedger(value: unknown): LedgerState {
 
 export function emptyLedger(): LedgerState {
   return {
-    version: 1,
+    version: 2,
     allTime: zeroBuckets(),
     days: {},
     months: {},
@@ -275,8 +388,9 @@ export function foldUsage(
   step: number,
   usage: TokenUsageLike,
   at = new Date(),
+  config: UsageMonitorConfig = DEFAULT_CONFIG,
 ): LedgerState {
-  const next = bucketsOf(usage)
+  const next = costedBucketsOf(usage, at, config)
   const key = `${sessionId}:${turn}:${step}`
   const delta = deltaBuckets(next, ledger.lastStep[key])
   if (isZero(delta)) return ledger
@@ -351,8 +465,8 @@ function sessionLabel(rawSession: unknown, sessionId: string): string {
 }
 
 /** Recent calendar days, zero-filled, oldest first. */
-function recentDays(ledger: LedgerState, count: number, now = new Date()): Array<{ date: string; buckets: TokenBuckets }> {
-  const out: Array<{ date: string; buckets: TokenBuckets }> = []
+function recentDays(ledger: LedgerState, count: number, now = new Date()): Array<{ date: string; buckets: CostedBuckets }> {
+  const out: Array<{ date: string; buckets: CostedBuckets }> = []
   for (let i = count - 1; i >= 0; i--) {
     const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
     const key = localDayKey(date)
@@ -362,31 +476,14 @@ function recentDays(ledger: LedgerState, count: number, now = new Date()): Array
 }
 
 /** Recent calendar months, zero-filled, oldest first. */
-function recentMonths(ledger: LedgerState, count: number, now = new Date()): Array<{ month: string; buckets: TokenBuckets }> {
-  const out: Array<{ month: string; buckets: TokenBuckets }> = []
+function recentMonths(ledger: LedgerState, count: number, now = new Date()): Array<{ month: string; buckets: CostedBuckets }> {
+  const out: Array<{ month: string; buckets: CostedBuckets }> = []
   for (let i = count - 1; i >= 0; i--) {
     const date = new Date(now.getFullYear(), now.getMonth() - i, 1)
     const key = localMonthKey(date)
     out.push({ month: key, buckets: ledger.months[key] ?? zeroBuckets() })
   }
   return out
-}
-
-function topSessions(ledger: LedgerState, count: number): Array<{ id: string; label: string; buckets: TokenBuckets; tokens: number }> {
-  return Object.values(ledger.sessions)
-    .sort((a, b) => totalTokens(b) - totalTokens(a))
-    .slice(0, count)
-    .map(row => ({
-      id: row.id,
-      label: row.label,
-      buckets: {
-        uncachedInputTokens: row.uncachedInputTokens,
-        outputTokens: row.outputTokens,
-        cacheReadTokens: row.cacheReadTokens,
-        cacheWriteTokens: row.cacheWriteTokens,
-      },
-      tokens: totalTokens(row),
-    }))
 }
 
 function pruneLastStep(ledger: LedgerState): LedgerState {
@@ -462,7 +559,7 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
     if (typeof sessionId !== 'string') return
     const sample = usageOfEvent(rawEvent)
     if (sample === undefined || !Number.isFinite(sample.turn) || !Number.isFinite(sample.step)) return
-    ledger = foldUsage(ledger, sessionId, sessionLabel(rawSession, sessionId), sample.turn, sample.step, sample.usage)
+    ledger = foldUsage(ledger, sessionId, sessionLabel(rawSession, sessionId), sample.turn, sample.step, sample.usage, new Date(), dynamic())
     scheduleSave()
   })
 
@@ -538,6 +635,8 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
     const now = new Date()
     const today = ledger.days[localDayKey(now)] ?? zeroBuckets()
     const month = ledger.months[localMonthKey(now)] ?? zeroBuckets()
+    const days = recentDays(ledger, 7, now)
+    const weekCost = days.reduce((sum, row) => sum + row.buckets.costCny, 0)
     return {
       ok: true,
       generatedAt: now.getTime(),
@@ -546,12 +645,15 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
         today,
         month,
         allTime: ledger.allTime,
+        todayCost: today.costCny,
+        weekCost: Math.round(weekCost * 1_000_000) / 1_000_000,
+        monthCost: month.costCny,
+        allTimeCost: ledger.allTime.costCny,
         todayCacheHitRate: cacheHitRate(today),
         monthCacheHitRate: cacheHitRate(month),
         allTimeCacheHitRate: cacheHitRate(ledger.allTime),
-        days: recentDays(ledger, 7, now),
+        days,
         months: recentMonths(ledger, 12, now),
-        topSessions: topSessions(ledger, 5),
       },
     }
   }

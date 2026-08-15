@@ -7,11 +7,13 @@ import {
   billedInputTokens,
   bucketsOf,
   cacheHitRate,
+  costedBucketsOf,
   deltaBuckets,
   emptyLedger,
   foldUsage,
   loadLedger,
   parseBalancePayload,
+  ratesForUsage,
   saveLedger,
   zeroBuckets,
 } from '../lib/index.js'
@@ -39,10 +41,13 @@ test('foldUsage replaces the same step sample instead of double counting', () =>
     outputTokens: 60,
     cacheReadTokens: 400,
     cacheWriteTokens: 5,
+    // (120 + 5) * 3 + 400 * 0.025 + 60 * 6 = 745, per 1M
+    costCny: 0.000745,
   })
   assert.equal(ledger.days['2026-08-15'].uncachedInputTokens, 120)
   assert.equal(ledger.months['2026-08'].outputTokens, 60)
   assert.equal(ledger.sessions.s1.outputTokens, 60)
+  assert.equal(ledger.sessions.s1.costCny, 0.000745)
 })
 
 test('foldUsage clamps a downward revision to zero and never erases history', () => {
@@ -53,6 +58,7 @@ test('foldUsage clamps a downward revision to zero and never erases history', ()
   assert.equal(ledger.allTime.inputTokens, undefined)
   assert.equal(ledger.allTime.uncachedInputTokens, 100)
   assert.equal(ledger.allTime.outputTokens, 50)
+  assert.equal(ledger.allTime.costCny, 0.0006)
 })
 
 test('usage is attributed to the local calendar day and month of receipt', () => {
@@ -91,10 +97,57 @@ test('cache hit rate uses DSH billed-input vocabulary', () => {
     outputTokens: 2,
     cacheReadTokens: 4,
     cacheWriteTokens: 0,
+    costCny: 0,
   })
-  assert.deepEqual(deltaBuckets({ uncachedInputTokens: 5, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, {
-    uncachedInputTokens: 9, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+  assert.deepEqual(deltaBuckets({ uncachedInputTokens: 5, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costCny: 0 }, {
+    uncachedInputTokens: 9, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costCny: 0,
   }), zeroBuckets())
+})
+
+test('pricing uses legacy rates before the epoch and Beijing peak/off-peak after', () => {
+  // 2026-08-17T01:00Z = Beijing 09:00, peak.
+  const peak = ratesForUsage({
+    priceEpoch: '2026-08-17',
+    priceCacheHitPerM: 0.025,
+    priceInputPerM: 3,
+    priceOutputPerM: 6,
+    offPeakCacheHitPerM: 0.15,
+    offPeakInputPerM: 4.5,
+    offPeakOutputPerM: 13.5,
+    peakCacheHitPerM: 0.3,
+    peakInputPerM: 9,
+    peakOutputPerM: 27,
+  }, new Date('2026-08-17T01:00:00.000Z'))
+  assert.deepEqual(peak, { cacheHit: 0.3, input: 9, output: 27 })
+
+  // 2026-08-17T04:00Z = Beijing 12:00, off-peak gap between 12 and 14.
+  const offPeak = ratesForUsage({
+    priceEpoch: '2026-08-17',
+    priceCacheHitPerM: 0.025,
+    priceInputPerM: 3,
+    priceOutputPerM: 6,
+    offPeakCacheHitPerM: 0.15,
+    offPeakInputPerM: 4.5,
+    offPeakOutputPerM: 13.5,
+    peakCacheHitPerM: 0.3,
+    peakInputPerM: 9,
+    peakOutputPerM: 27,
+  }, new Date('2026-08-17T04:00:00.000Z'))
+  assert.deepEqual(offPeak, { cacheHit: 0.15, input: 4.5, output: 13.5 })
+
+  const sample = costedBucketsOf({ inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0 }, new Date('2026-08-17T01:00:00.000Z'), {
+    priceEpoch: '2026-08-17',
+    priceCacheHitPerM: 0.025,
+    priceInputPerM: 3,
+    priceOutputPerM: 6,
+    offPeakCacheHitPerM: 0.15,
+    offPeakInputPerM: 4.5,
+    offPeakOutputPerM: 13.5,
+    peakCacheHitPerM: 0.3,
+    peakInputPerM: 9,
+    peakOutputPerM: 27,
+  })
+  assert.equal(sample.costCny, 9)
 })
 
 test('DeepSeek balance payload parses numeric strings and defaults currency', () => {

@@ -22,6 +22,7 @@ interface Buckets {
   outputTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  costCny: number
 }
 
 interface StatusData {
@@ -41,12 +42,15 @@ interface StatusData {
     today: Buckets
     month: Buckets
     allTime: Buckets
+    todayCost: number
+    weekCost: number
+    monthCost: number
+    allTimeCost: number
     todayCacheHitRate: number | null
     monthCacheHitRate: number | null
     allTimeCacheHitRate: number | null
     days: Array<{ date: string; buckets: Buckets }>
     months: Array<{ month: string; buckets: Buckets }>
-    topSessions: Array<{ id: string; label: string; buckets: Buckets; tokens: number }>
   }
 }
 
@@ -58,7 +62,7 @@ interface SettingsSnapshot {
   balancePollMinutes: number
 }
 
-const zero: Buckets = { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+const zero: Buckets = { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costCny: 0 }
 
 function ensureStyles(): void {
   const id = 'dsh-usage-monitor-styles'
@@ -88,6 +92,14 @@ function ensureStyles(): void {
 .dsh-usage-table th,.dsh-usage-table td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--dsw-alias-border-l2)}
 .dsh-usage-table th:first-child,.dsh-usage-table td:first-child{text-align:left}
 .dsh-usage-table th{color:var(--dsw-alias-label-tertiary);font-weight:500}
+.dsh-usage-chart{margin-top:2px}
+.dsh-usage-chart-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;font-size:12px;color:var(--dsw-alias-label-primary)}
+.dsh-usage-metric{display:flex;gap:4px}
+.dsh-usage-metric button{appearance:none;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 10px;background:transparent;color:var(--dsw-alias-label-tertiary);font:12px/1.6 system-ui;cursor:pointer}
+.dsh-usage-metric button.active{background:var(--dsw-alias-brand-primary,#3b82f6);border-color:var(--dsw-alias-brand-primary,#3b82f6);color:#fff}
+.dsh-usage-chart-box{position:relative;height:140px}
+.dsh-usage-chart-box svg{display:block;width:100%;height:100%}
+.dsh-usage-chart-tip{position:absolute;z-index:2;transform:translate(-50%,-115%);padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:11px;line-height:1.5;white-space:nowrap;pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.16)}
 .dsh-usage-err{margin:0;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--dsw-alias-label-error,#ef4444) 14%,transparent);color:var(--dsw-alias-label-error,#ef4444)}
 .dsh-usage-card{list-style:none;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}
 .dsh-usage-card button{width:100%;appearance:none;border:0;background:none;font:inherit;color:inherit;text-align:left;cursor:pointer;padding:14px 16px}
@@ -122,6 +134,12 @@ function fmtMoney(value: number | undefined, currency: string | undefined): stri
   return `${symbol}${value.toFixed(2)}`
 }
 
+function fmtCost(value: number | undefined): string {
+  if (!Number.isFinite(value) || value === undefined) return '¥0.00'
+  if (value < 0.01 && value > 0) return '<¥0.01'
+  return `¥${value.toFixed(2)}`
+}
+
 function fmtPercent(rate: number | null): string {
   return rate === null ? '—' : `${Math.round(rate * 100)}%`
 }
@@ -142,34 +160,72 @@ function Stat({ label, value }: { label: string; value: string }) {
   )
 }
 
-function HistoryTable({ rows, keyLabel }: { rows: Array<{ date?: string; month?: string; buckets: Buckets }>; keyLabel: string }) {
+interface ChartRow {
+  key: string
+  costCny: number
+  totalTokens: number
+}
+
+function LineChart({ title, rows }: { title: string; rows: ChartRow[] }) {
+  const [metric, setMetric] = useState<'cost' | 'tokens'>('cost')
+  const [hover, setHover] = useState<number | null>(null)
+
+  const values = rows.map(row => (metric === 'cost' ? row.costCny : row.totalTokens))
+  const max = Math.max(1, ...values)
+  const width = 600
+  const height = 150
+  const padX = 8
+  const padY = 10
+  const step = rows.length > 1 ? (width - padX * 2) / (rows.length - 1) : 0
+  const points = rows.map((row, index) => ({
+    x: rows.length > 1 ? padX + index * step : width / 2,
+    y: height - padY - (values[index] ?? 0) / max * (height - padY * 2),
+    row,
+    value: values[index] ?? 0,
+  }))
+
+  const onMove = (event: React.MouseEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    const ratio = (event.clientX - rect.left) / Math.max(1, rect.width)
+    const index = Math.max(0, Math.min(rows.length - 1, Math.round(ratio * (rows.length - 1))))
+    setHover(index)
+  }
+
+  const hovered = hover === null ? undefined : points[hover]
+  const polyline = points.map(point => `${point.x},${point.y}`).join(' ')
+  const area = points.length > 0
+    ? `${padX},${height - padY} ${polyline} ${points[points.length - 1]?.x ?? padX},${height - padY}`
+    : ''
+
   return (
-    <table className="dsh-usage-table">
-      <thead>
-        <tr>
-          <th>{keyLabel}</th>
-          <th>输入</th>
-          <th>输出</th>
-          <th>缓存读</th>
-          <th>合计</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map(row => {
-          const key = row.date ?? row.month ?? ''
-          const b = row.buckets ?? zero
-          return (
-            <tr key={key}>
-              <td>{key}</td>
-              <td>{fmtTokens(billedInput(b))}</td>
-              <td>{fmtTokens(b.outputTokens)}</td>
-              <td>{fmtTokens(b.cacheReadTokens)}</td>
-              <td>{fmtTokens(tokens(b))}</td>
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
+    <div className="dsh-usage-chart">
+      <div className="dsh-usage-chart-head">
+        <span>{title}</span>
+        <div className="dsh-usage-metric">
+          <button type="button" className={metric === 'cost' ? 'active' : ''} onClick={() => { setMetric('cost') }}>花费</button>
+          <button type="button" className={metric === 'tokens' ? 'active' : ''} onClick={() => { setMetric('tokens') }}>Token</button>
+        </div>
+      </div>
+      <div className="dsh-usage-chart-box" onMouseMove={onMove} onMouseLeave={() => { setHover(null) }}>
+        <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label={`${title}折线图`}>
+          <line x1={padX} y1={height - padY} x2={width - padX} y2={height - padY} stroke="var(--dsw-alias-border-l2)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+          <polygon points={area} fill="color-mix(in srgb,var(--dsw-alias-brand-primary,#3b82f6) 12%,transparent)" />
+          <polyline points={polyline} fill="none" stroke="var(--dsw-alias-brand-primary,#3b82f6)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+          {hovered !== undefined ? (
+            <g>
+              <line x1={hovered.x} y1={padY} x2={hovered.x} y2={height - padY} stroke="var(--dsw-alias-label-dimmed)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+              <circle cx={hovered.x} cy={hovered.y} r="4" fill="var(--dsw-alias-brand-primary,#3b82f6)" stroke="var(--dsw-alias-bg-layer-2)" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+            </g>
+          ) : null}
+        </svg>
+        {hovered !== undefined ? (
+          <div className="dsh-usage-chart-tip" style={{ left: `${hovered.x / width * 100}%`, top: `${hovered.y / height * 100}%` }}>
+            <div>{hovered.row.key}</div>
+            <div>{metric === 'cost' ? fmtCost(hovered.value) : `${fmtTokens(hovered.value)} tokens`}</div>
+          </div>
+        ) : null}
+      </div>
+    </div>
   )
 }
 
@@ -231,7 +287,17 @@ function DetailPanel({ status, loading, onClose, onRefresh, anchorLeft, openUp }
       ) : null}
 
       <section className="dsh-usage-section">
-        <h3>今日</h3>
+        <h3>花费（按官方价估算）</h3>
+        <div className="dsh-usage-grid">
+          <Stat label="今日" value={usage ? fmtCost(usage.todayCost) : '—'} />
+          <Stat label="本周" value={usage ? fmtCost(usage.weekCost) : '—'} />
+          <Stat label="本月" value={usage ? fmtCost(usage.monthCost) : '—'} />
+          <Stat label="累计" value={usage ? fmtCost(usage.allTimeCost) : '—'} />
+        </div>
+      </section>
+
+      <section className="dsh-usage-section">
+        <h3>今日 Token</h3>
         <div className="dsh-usage-grid">
           <Stat label="输入(计费)" value={usage ? fmtTokens(billedInput(usage.today)) : '—'} />
           <Stat label="输出" value={usage ? fmtTokens(usage.today.outputTokens) : '—'} />
@@ -240,7 +306,7 @@ function DetailPanel({ status, loading, onClose, onRefresh, anchorLeft, openUp }
       </section>
 
       <section className="dsh-usage-section">
-        <h3>本月 / 累计</h3>
+        <h3>本月 / 累计 Token</h3>
         <div className="dsh-usage-grid">
           <Stat label="本月输入" value={usage ? fmtTokens(billedInput(usage.month)) : '—'} />
           <Stat label="本月输出" value={usage ? fmtTokens(usage.month.outputTokens) : '—'} />
@@ -253,41 +319,27 @@ function DetailPanel({ status, loading, onClose, onRefresh, anchorLeft, openUp }
 
       {usage && usage.days.length > 0 ? (
         <section className="dsh-usage-section">
-          <h3>最近 7 天</h3>
-          <HistoryTable rows={usage.days as Array<{ date?: string; month?: string; buckets: Buckets }>} keyLabel="日期" />
+          <LineChart
+            title="最近 7 天"
+            rows={usage.days.map(day => ({
+              key: day.date,
+              costCny: day.buckets.costCny,
+              totalTokens: tokens(day.buckets),
+            }))}
+          />
         </section>
       ) : null}
 
       {usage && usage.months.length > 0 ? (
         <section className="dsh-usage-section">
-          <h3>最近 12 个月</h3>
-          <HistoryTable rows={usage.months as Array<{ date?: string; month?: string; buckets: Buckets }>} keyLabel="月份" />
-        </section>
-      ) : null}
-
-      {usage && usage.topSessions.length > 0 ? (
-        <section className="dsh-usage-section">
-          <h3>会话消耗 Top {usage.topSessions.length}</h3>
-          <table className="dsh-usage-table">
-            <thead>
-              <tr>
-                <th>会话</th>
-                <th>输入</th>
-                <th>输出</th>
-                <th>合计</th>
-              </tr>
-            </thead>
-            <tbody>
-              {usage.topSessions.map(row => (
-                <tr key={row.id}>
-                  <td>{row.label}</td>
-                  <td>{fmtTokens(billedInput(row.buckets))}</td>
-                  <td>{fmtTokens(row.buckets.outputTokens)}</td>
-                  <td>{fmtTokens(row.tokens)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <LineChart
+            title="最近 12 个月"
+            rows={usage.months.map(month => ({
+              key: month.month,
+              costCny: month.buckets.costCny,
+              totalTokens: tokens(month.buckets),
+            }))}
+          />
         </section>
       ) : null}
     </div>
@@ -448,7 +500,7 @@ function UsageMonitor(): JSX.Element {
     ? fmtMoney(balance.total, balance.currency)
     : '余额 —'
   const todayText = usage ? `今日 ${fmtTokens(billedInput(usage.today))} in / ${fmtTokens(usage.today.outputTokens)} out` : '用量加载中'
-  const hitText = usage?.todayCacheHitRate !== undefined ? `缓存 ${fmtPercent(usage.todayCacheHitRate)}` : ''
+  const todayCostText = usage ? `今日花费 ${fmtCost(usage.todayCost)}` : ''
 
   const rect = barRef.current?.getBoundingClientRect()
   const anchorLeft = rect === undefined ? false : rect.left + rect.width / 2 < window.innerWidth / 2
@@ -488,8 +540,8 @@ function UsageMonitor(): JSX.Element {
       >
         <span className={balance?.ok === false ? 'dsh-usage-dot err' : 'dsh-usage-dot'} />
         <span className="dsh-usage-bar-parts">{balanceText}</span>
+        {todayCostText ? <span className="dsh-usage-bar-parts">{todayCostText}</span> : null}
         <span className="dsh-usage-bar-parts">{todayText}</span>
-        {hitText ? <span className="dsh-usage-bar-parts">{hitText}</span> : null}
       </button>
     </div>
   )
