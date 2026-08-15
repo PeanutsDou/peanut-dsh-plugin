@@ -1,0 +1,22 @@
+{
+  "name": "@peanutsdou/dsh-file-launcher",
+  "version": "0.1.0",
+  "description": "双击 Ctrl 唤起全盘文件名搜索框：Everything 引擎 + 收藏 + 常用打分，DSH 前后台均可唤起。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "launcher.html",
+    "everything"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-home-paths": "*",
+    "@deepseek-ai/dsh-host-webserver": "*"
+  },
+  "license": "MIT"
+}

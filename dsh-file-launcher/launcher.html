@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>文件搜索</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-input: #f3f4f6;
+    --bg-hover: #f3f4f6;
+    --bg-active: #eff6ff;
+    --border: #e5e7eb;
+    --fg: #1f2328;
+    --fg-dim: #6b7280;
+    --fg-faint: #9ca3af;
+    --accent: #2563eb;
+    --star: #f59e0b;
+    --shadow: 0 8px 28px rgba(0,0,0,.16);
+  }
+  html[data-ds-dark-theme] {
+    --bg: #1e2128;
+    --bg-input: #262a33;
+    --bg-hover: #2a2e3a;
+    --bg-active: #263246;
+    --border: #333946;
+    --fg: #e7e9ee;
+    --fg-dim: #9aa0ae;
+    --fg-faint: #6b7180;
+    --accent: #6ea8fe;
+    --star: #f6c453;
+    --shadow: 0 8px 28px rgba(0,0,0,.5);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    color: var(--fg);
+    font-size: 14px;
+    overflow: hidden;
+    user-select: none;
+  }
+  .shell {
+    display: flex; flex-direction: column;
+    height: 100vh;
+    background: var(--bg);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .input-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 14px;
+    height: 50px;
+    flex: 0 0 50px;
+  }
+  .search-icon { color: var(--fg-faint); font-size: 16px; line-height: 1; flex: 0 0 auto; }
+  #q {
+    flex: 1; border: none; outline: none; background: transparent;
+    color: var(--fg); font-size: 15px; line-height: 1.4;
+  }
+  #q::placeholder { color: var(--fg-faint); }
+  .results {
+    flex: 1; min-height: 0;
+    overflow-y: auto;
+    padding: 4px;
+    border-top: 1px solid var(--border);
+  }
+  .results:empty { display: none; }
+  .results::-webkit-scrollbar { width: 8px; }
+  .results::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 12px; min-height: 40px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .item.active { background: var(--bg-active); }
+  .item .icon { flex: 0 0 auto; width: 18px; text-align: center; font-size: 15px; }
+  .item .body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .item .name {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px;
+  }
+  .item .name mark { background: none; color: var(--accent); font-weight: 600; }
+  .item .meta {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: 11px; color: var(--fg-faint);
+  }
+  .item .meta .sep { margin: 0 4px; }
+  .item .right { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+  .item .badge {
+    font-size: 10px; color: var(--fg-dim);
+    border: 1px solid var(--border); border-radius: 999px; padding: 0 6px;
+  }
+  .item .star {
+    border: none; background: none; cursor: pointer;
+    font-size: 15px; color: var(--fg-faint); padding: 2px 4px; line-height: 1;
+  }
+  .item .star.on { color: var(--star); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="input-row">
+    <span class="search-icon">⌕</span>
+    <input id="q" type="text" placeholder="搜索文件名…" autocomplete="off" spellcheck="false" />
+  </div>
+  <div class="results" id="results"></div>
+</div>
+
+<script>
+(function () {
+  var q = document.getElementById('q')
+  var results = document.getElementById('results')
+
+  var items = []
+  var activeIndex = -1
+  var debounceTimer = null
+  var lastQuery = ''
+  var loading = false
+  var searchSeq = 0
+
+  var INPUT_H = 50
+  var ITEM_H = 40
+  var MAX_ITEMS = 8
+
+  function send(msg) {
+    try { window.chrome.webview.postMessage(msg) } catch (e) { /* 普通浏览器无此桥 */ }
+  }
+  function resizeTo(h) {
+    send({ type: 'resize', height: Math.round(h) })
+  }
+  function closeWindow() {
+    send({ type: 'close' })
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    })
+  }
+  function highlight(name, query) {
+    if (!query) return esc(name)
+    var idx = name.toLowerCase().indexOf(query.toLowerCase())
+    if (idx === -1) return esc(name)
+    return esc(name.slice(0, idx)) + '<mark>' + esc(name.slice(idx, idx + query.length)) + '</mark>' + esc(name.slice(idx + query.length))
+  }
+  function iconFor(it) { return it.isFolder ? '🗀' : '🗋' }
+
+  function syncHeight() {
+    var n = loading ? 1 : items.length
+    var h = n > 0 ? INPUT_H + Math.min(n, MAX_ITEMS) * ITEM_H + 10 : INPUT_H
+    resizeTo(h)
+  }
+
+  function render() {
+    if (loading) {
+      results.innerHTML = '<div class="empty">搜索中…</div>'
+      results.style.display = ''
+    } else if (items.length === 0) {
+      if (lastQuery !== '') {
+        results.innerHTML = '<div class="empty">没有匹配结果</div>'
+        results.style.display = ''
+      } else {
+        results.innerHTML = ''
+        results.style.display = 'none'
+      }
+    } else {
+      var html = ''
+      items.forEach(function (it, i) {
+        var meta = [it.dir].concat(it.size ? [it.size] : [], it.modified ? [it.modified] : []).join('<span class="sep">·</span>')
+        var badge = it.usageCount > 0 ? '<span class="badge">' + it.usageCount + '×</span>' : ''
+        html +=
+          '<div class="item' + (i === activeIndex ? ' active' : '') + '" data-index="' + i + '">' +
+            '<span class="icon">' + iconFor(it) + '</span>' +
+            '<span class="body">' +
+              '<span class="name">' + highlight(it.name, lastQuery) + '</span>' +
+              '<span class="meta">' + esc(meta) + '</span>' +
+            '</span>' +
+            '<span class="right">' + badge +
+              '<button class="star' + (it.favorite ? ' on' : '') + '" data-star="' + i + '" title="收藏">★</button>' +
+            '</span>' +
+          '</div>'
+      })
+      results.innerHTML = html
+      results.style.display = ''
+    }
+    syncHeight()
+    scrollActiveIntoView()
+  }
+
+  function scrollActiveIntoView() {
+    var el = results.querySelector('.item.active')
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
+  }
+  function setActive(i) {
+    if (items.length === 0) { activeIndex = -1; return }
+    activeIndex = ((i % items.length) + items.length) % items.length
+    render()
+  }
+
+  function doSearch(query) {
+    lastQuery = query
+    if (query === '') {
+      loading = false
+      items = []
+      activeIndex = -1
+      render()
+      return
+    }
+    var seq = ++searchSeq
+    loading = true
+    items = []
+    activeIndex = -1
+    render()
+    var controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+    var timer = setTimeout(function () { if (controller) controller.abort() }, 8000)
+    fetch('/file-launcher/api/search?q=' + encodeURIComponent(query) + '&limit=30', controller ? { signal: controller.signal } : {})
+      .then(function (r) { return r.json() })
+      .then(function (data) {
+        if (seq !== searchSeq) return
+        clearTimeout(timer)
+        loading = false
+        items = data.items || []
+        activeIndex = -1
+        render()
+      })
+      .catch(function () {
+        if (seq !== searchSeq) return
+        clearTimeout(timer)
+        loading = false
+        items = []
+        activeIndex = -1
+        render()
+      })
+  }
+
+  function onInput() {
+    clearTimeout(debounceTimer)
+    var val = q.value.trim()
+    if (val === '') {
+      debounceTimer = null
+      doSearch('')
+      return
+    }
+    debounceTimer = setTimeout(function () { doSearch(val) }, 180)
+  }
+
+  function openItem(it, reveal) {
+    if (!it) return
+    fetch('/file-launcher/api/' + (reveal ? 'reveal' : 'open'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: it.fullPath, query: lastQuery })
+    }).then(function () {
+      if (!reveal) closeWindow()
+    })
+  }
+  function toggleFavorite(it) {
+    if (!it) return
+    fetch('/file-launcher/api/favorite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: it.fullPath, favorite: !it.favorite })
+    }).then(function (r) { return r.json() }).then(function (d) {
+      it.favorite = d.favorite
+      render()
+    })
+  }
+
+  q.addEventListener('input', onInput)
+  q.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(activeIndex + 1) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(activeIndex - 1) }
+    else if (e.key === 'Enter') {
+      e.preventDefault()
+      openItem(items[activeIndex] || items[0], e.ctrlKey || e.metaKey)
+    }
+    else if (e.key === 'Tab') {
+      e.preventDefault()
+      var it = items[activeIndex] || items[0]
+      if (it) toggleFavorite(it)
+    }
+    else if (e.key === 'Escape') {
+      e.preventDefault()
+      if (q.value) { q.value = ''; onInput() } else closeWindow()
+    }
+  })
+
+  results.addEventListener('click', function (e) {
+    var star = e.target.closest('[data-star]')
+    if (star) { toggleFavorite(items[parseInt(star.getAttribute('data-star'), 10)]); return }
+    var el = e.target.closest('.item')
+    if (el) openItem(items[parseInt(el.getAttribute('data-index'), 10)], false)
+  })
+  results.addEventListener('mousemove', function (e) {
+    var el = e.target.closest('.item')
+    if (el) setActive(parseInt(el.getAttribute('data-index'), 10))
+  })
+
+  q.focus()
+  items = []
+  render()
+})()
+</script>
+</body>
+</html>
