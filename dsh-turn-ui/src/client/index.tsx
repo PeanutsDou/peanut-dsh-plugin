@@ -7,7 +7,7 @@
  * by the TurnFold core patch, falling back to proportional scroll for turns
  * outside the paged window.
  */
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import type { ClientContext, SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -144,6 +144,8 @@ function TurnRail({ useSession, sessionId }: RailProps) {
   const [frame, setFrame] = useState<RailFrame | null>(null)
   const [activeTurn, setActiveTurn] = useState<number | null>(turnOrder[0] ?? null)
   const [hoverTurn, setHoverTurn] = useState<number | null>(null)
+  const [hoverTop, setHoverTop] = useState<number | null>(null)
+  const trackRef = useRef<HTMLDivElement | null>(null)
 
   const orderKey = useMemo(() => turnOrder.join(','), [turnOrder])
   const turnSummaries = useMemo(() => buildTurnSummaries(chat, turnOrder), [chat, orderKey])
@@ -232,36 +234,54 @@ function TurnRail({ useSession, sessionId }: RailProps) {
     port.scrollTop = ratio * Math.max(0, port.scrollHeight - port.clientHeight)
   }
 
+  const updateHoverTop = (turn: number, button?: HTMLButtonElement | null): void => {
+    if (button === undefined || button === null) return
+    const track = trackRef.current
+    setHoverTop(button.offsetTop - (track?.scrollTop ?? 0) + button.offsetHeight / 2)
+  }
+
+  const updateHoverFromTrackScroll = (): void => {
+    if (hoverTurn === null) return
+    const button = trackRef.current?.querySelector<HTMLButtonElement>(`[data-turn="${hoverTurn}"]`)
+    updateHoverTop(hoverTurn, button ?? null)
+  }
+
   return createPortal(
     <div className="dsh-turn-rail" style={{ left: frame.left, top: frame.top, height: frame.height }} aria-hidden="false">
-      <div className="dsh-turn-rail-track">
+      <div ref={trackRef} className="dsh-turn-rail-track" onScroll={updateHoverFromTrackScroll}>
         {turnOrder.map(turn => {
           const running = timeline.turns.get(turn)?.status === 'open'
           return (
             <button
               key={turn}
               type="button"
+              data-turn={turn}
               className={`dsh-turn-bar${turn === activeTurn ? ' active' : ''}${running ? ' running' : ''}`}
               aria-label={`跳转到第 ${turn + 1} 轮`}
               onClick={() => { jumpTo(turn) }}
-              onMouseEnter={() => { setHoverTurn(turn) }}
-              onMouseLeave={() => { setHoverTurn(null) }}
-            >
-              {hoverTurn === turn ? (
-                <span className="dsh-turn-rail-tip">
-                  <span className="dsh-turn-rail-tip-title">
-                    第 {turn + 1} 轮
-                    {running ? ' · 运行中' : ''}
-                  </span>
-                  <span className="dsh-turn-rail-tip-summary">
-                    {turnSummaries.get(turn) ?? '（无文字摘要）'}
-                  </span>
-                </span>
-              ) : null}
-            </button>
+              onMouseEnter={event => {
+                setHoverTurn(turn)
+                updateHoverTop(turn, event.currentTarget)
+              }}
+              onMouseLeave={() => {
+                setHoverTurn(null)
+                setHoverTop(null)
+              }}
+            />
           )
         })}
       </div>
+      {hoverTurn !== null && hoverTop !== null ? (
+        <div className="dsh-turn-rail-tip" style={{ top: hoverTop }}>
+          <span className="dsh-turn-rail-tip-title">
+            第 {hoverTurn + 1} 轮
+            {timeline.turns.get(hoverTurn)?.status === 'open' ? ' · 运行中' : ''}
+          </span>
+          <span className="dsh-turn-rail-tip-summary">
+            {turnSummaries.get(hoverTurn) ?? '（无文字摘要）'}
+          </span>
+        </div>
+      ) : null}
     </div>,
     document.body,
   )
