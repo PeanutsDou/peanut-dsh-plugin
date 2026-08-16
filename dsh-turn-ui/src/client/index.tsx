@@ -126,11 +126,11 @@ function ensureFoldStyles(): void {
   style.id = id
   style.textContent = `
 .dsh-turn-fold-overlay{position:absolute;z-index:40;pointer-events:none;box-sizing:border-box}
-.dsh-turn-fold-overlay-btn{pointer-events:auto;appearance:none;display:flex;align-items:center;gap:8px;width:100%;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;cursor:pointer;text-align:left}
-.dsh-turn-fold-overlay.collapsed .dsh-turn-fold-overlay-btn{height:34px;padding:0 12px}
-.dsh-turn-fold-overlay.expanded .dsh-turn-fold-overlay-btn{width:auto;height:26px;padding:0 10px;opacity:.92}
-.dsh-turn-fold-overlay-btn:hover{border-color:var(--dsw-alias-label-dimmed)}
-.dsh-turn-fold-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-state-success-primary)}
+.dsh-turn-fold-overlay-btn{pointer-events:auto;appearance:none;display:flex;align-items:center;gap:8px;width:100%;height:22px;border:0;border-bottom:1px solid var(--dsw-alias-border-l2);border-radius:0;background:transparent;color:var(--dsw-alias-label-tertiary);font:11px/1.5 system-ui;cursor:pointer;text-align:left;padding:0 2px}
+.dsh-turn-fold-overlay.collapsed .dsh-turn-fold-overlay-btn{height:26px}
+.dsh-turn-fold-overlay.expanded .dsh-turn-fold-overlay-btn{width:auto;border-bottom-color:transparent;padding:0 8px 0 0}
+.dsh-turn-fold-overlay-btn:hover{color:var(--dsw-alias-label-primary)}
+.dsh-turn-fold-dot{flex:none;width:2px;height:10px;border-radius:0;background:var(--dsw-alias-state-success-primary)}
 .dsh-turn-fold-overlay.running .dsh-turn-fold-dot{background:var(--dsw-alias-state-business-primary);animation:dsh-turn-fold-pulse 1.2s ease-in-out infinite}
 .dsh-turn-fold-overlay.interrupted .dsh-turn-fold-dot{background:var(--dsw-alias-state-error-primary)}
 .dsh-turn-fold-label{flex:none;font-weight:600}
