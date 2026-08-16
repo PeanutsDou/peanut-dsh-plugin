@@ -33,6 +33,8 @@ $src  = "."
 $dest = "$env:USERPROFILE\.dsh\profiles\web\node_modules\@peanutsdou\dsh-reasoning-effort"
 Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
 Copy-Item $src $dest -Recurse
+Remove-Item "$dest\node_modules" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$dest\.client-build" -Recurse -Force -ErrorAction SilentlyContinue
 ```
 
 Append this row to `~/.dsh/profiles/web/cordis.patch.yml`:
