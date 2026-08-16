@@ -1,0 +1,34 @@
+{
+  "name": "dsh-apex-standard",
+  "version": "1.2.1",
+  "description": "Unified anchored agent preset for DeepSeek V4 Pro/Flash (official API & opencode-go): Minimal-exact two-tool first-request bootstrap, model-aware Pro/Flash paths, epoch-aware catalog management for long-session stability.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "preset/",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "agent-preset",
+    "preset",
+    "apex-standard",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+    "opencode-go"
+  ],
+  "license": "MIT"
+}

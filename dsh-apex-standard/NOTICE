@@ -1,0 +1,32 @@
+NOTICE
+======
+
+apex-standard is derived from the following MIT-licensed projects:
+
+1. xiaobright/dsh-anchored-standard (MIT)
+   https://github.com/xiaobright/dsh-anchored-standard
+   - preset/agent.cordis.yml: forked (bootstrap row replaced by
+     apex-bootstrap; tool-result pruner thresholds raised; comments adapted)
+   - preset/compaction-epoch.mjs, custom-bash.mjs, dev-tool-search.mjs,
+     skill-search.mjs, instruction-hint.mjs: retained verbatim
+   - preset/apex-bootstrap.mjs: forked from preset/tool-bootstrap.mjs
+     (model-aware Pro/Flash branching; rc.6-safe promotion tracker)
+
+2. SheberDavid/v4-flash-godmode-opencode-go (MIT)
+   https://github.com/SheberDavid/v4-flash-godmode-opencode-go
+   - DEFAULT_FLASH_PERSONA in apex-bootstrap.mjs is the WEAK_FLASH persona
+     from that repository's router-core.mjs, verbatim.
+
+3. yjh051108/dsh-router-standard (MIT)
+   https://github.com/yjh051108/dsh-router-standard
+   - applyPersona() in apex-bootstrap.mjs follows that project's
+     section-preserving persona replacement (router §G fix).
+
+4. deepseek-ai/deepseek-harness (MIT)
+   https://github.com/deepseek-ai/deepseek-harness
+   - The persona row and persistent-shell/bootstrap-filesystem groups are
+     byte-identical to the official Minimal preset, per its documented
+     "exact RL prompt and schemas" semantics.
+
+Original copyright and MIT license texts of the respective upstream
+projects apply to the derived portions.

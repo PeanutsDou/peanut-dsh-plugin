@@ -1,0 +1,7 @@
+# The `dsh-apex-standard` bundle layer: one installer entry that copies the
+# bundled preset into the user preset root on boot, so
+# `dsh plugin --profile web add github:rinDBeans/dsh-apex-standard`
+# also makes the preset selectable in the session preset list.
+- insert:
+    - id: apex-standard-installer
+      name: dsh-apex-standard
