@@ -403,6 +403,11 @@ function applyFold(chat: unknown, sessionId: string, enabled: boolean): void {
 function TurnFoldAdapter({ useSession, sessionId }: RailProps) {
   const settings = useSyncExternalStore(subscribeClientSettings, getClientSettingsSnapshot)
   const chat = useSession(snapshot => snapshot.chat)
+  // Keep the latest snapshot in a ref instead of as an effect dependency: the
+  // chat snapshot gets a fresh object identity on every streaming flush, and a
+  // chat-keyed effect would tear down + restore + re-collapse rows each token.
+  const chatRef = useRef(chat)
+  chatRef.current = chat
   useEffect(() => {
     ensureFoldStyles()
     let raf = 0
@@ -412,7 +417,7 @@ function TurnFoldAdapter({ useSession, sessionId }: RailProps) {
     const run = (): void => {
       if (foldApplying) return
       foldApplying = true
-      try { applyFold(chat, sessionId, settings.turnFoldEnabled) } finally { foldApplying = false }
+      try { applyFold(chatRef.current, sessionId, settings.turnFoldEnabled) } finally { foldApplying = false }
     }
     const schedule = (): void => {
       cancelAnimationFrame(raf)
@@ -424,11 +429,12 @@ function TurnFoldAdapter({ useSession, sessionId }: RailProps) {
       observer = new MutationObserver(schedule)
       observer.observe(port, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-chat-anchor-key'] })
     }
+    // Interval doubles as a reconciliation pass (labels, durations, row
+    // presence) for snapshot changes that do not produce DOM mutations.
     interval = window.setInterval(() => {
       const port = scrollport()
       if (port !== null) {
         attach(port)
-        window.clearInterval(interval)
         schedule()
       }
     }, 500)
@@ -443,7 +449,7 @@ function TurnFoldAdapter({ useSession, sessionId }: RailProps) {
       restoreFoldRows()
       clearFoldOverlays(sessionId)
     }
-  }, [chat, sessionId, settings.turnFoldEnabled])
+  }, [sessionId, settings.turnFoldEnabled])
   return null
 }
 
@@ -500,7 +506,7 @@ function TurnRail({ useSession, sessionId }: RailProps) {
   useEffect(() => {
     ensureStyles()
     let observer: MutationObserver | undefined
-    let observedPort: HTMLElement | null = null
+    let observedOutlet: HTMLElement | null = null
     let frame = 0
     const updateFrame = () => {
       const port = scrollport()
@@ -524,13 +530,16 @@ function TurnRail({ useSession, sessionId }: RailProps) {
       frame = requestAnimationFrame(updateFrame)
     }
     const attach = (port: HTMLElement): void => {
-      if (observedPort === port) return
+      const outlet = port.querySelector<HTMLElement>('[data-slot="conversation.view"]')
+      if (outlet === null || observedOutlet === outlet) return
       observer?.disconnect()
-      observedPort = port
+      observedOutlet = outlet
       observer = new MutationObserver(schedule)
-      // Detect view-tab swaps immediately: `[data-chat-flow]` is unmounted
-      // when conversation.view switches away from chat.
-      observer.observe(port, { childList: true, subtree: true })
+      // The slot outlet's direct child is the active view root. Observing only
+      // direct childList means a tab swap remounts it and hides the rail
+      // immediately, while streaming token updates INSIDE ChatView never fire
+      // this observer (they used to, forcing a per-frame layout read).
+      observer.observe(outlet, { childList: true })
     }
     updateFrame()
     const port = scrollport()
