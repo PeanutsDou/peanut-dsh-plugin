@@ -8,7 +8,7 @@
 
 [English](README.en.md) · [上游原版](https://github.com/HanaAyane/dsh-reasoning-effort) · [本仓库](https://github.com/PeanutsDou/peanut-dsh-plugin/tree/main/dsh-reasoning-effort) · [反馈问题](https://github.com/PeanutsDou/peanut-dsh-plugin/issues)
 
-[![fork 0.5.2](https://img.shields.io/badge/fork-0.5.2-6f83ff?style=flat-square)](https://github.com/PeanutsDou/peanut-dsh-plugin/tree/main/dsh-reasoning-effort)
+[![fork 0.6.0](https://img.shields.io/badge/fork-0.6.0-6f83ff?style=flat-square)](https://github.com/PeanutsDou/peanut-dsh-plugin/tree/main/dsh-reasoning-effort)
 [![DSH 0.1.0-rc.6](https://img.shields.io/badge/DSH-0.1.0--rc.6-8b5cf6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![MIT License](https://img.shields.io/badge/license-MIT-536990?style=flat-square)](LICENSE)
 
@@ -83,6 +83,10 @@ DeepSeek 系模型通常公开 `off` / `high` / `max`；GLM coding 系模型（�
 <img src="assets/readme/settings.webp" alt="DeepSeek Harness 通用设置中的推理强度滑块和鲸鱼娘滑块开关" width="1200">
 
 鲸鱼娘只替换按钮外观，不改变档位吸附、键盘控制、辐射特效或模型选择。拖动时动画会自动加速；系统启用“减少动态效果”后会停留在稳定帧。
+
+- **DeepSeek V4 Flash**：使用原版蓝色 Q 版鲸鱼娘。
+- **DeepSeek V4 Pro**：使用本 fork 新增的成女版鲸鱼娘，黑色 / 炭灰 / 银色配色，滑块脉冲与辐射特效同步变成黑灰色。
+
 
 同一页面中的 **推理强度滑块** 总开关可以临时关闭整个增强控件。关闭后无需卸载，DSH 原生模型选择器会立即恢复。两个开关都只保存在当前浏览器。
 

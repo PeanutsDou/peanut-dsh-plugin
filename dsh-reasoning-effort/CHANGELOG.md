@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.0] - 2026-08-16
+
+- DeepSeek V4 Pro now uses the adult whale-girl run-cycle thumb generated with local Codex (`chibi-runner-pro-strip.png`); V4 Flash keeps the original blue Q version.
+- The Pro variant switches the slider pulses, flare, breathing animation, and canvas radiation to a black / charcoal / silver palette.
+
 ## [0.5.2] - 2026-08-16
 
 - The whale-girl (Big Fat Fish) thumb is now enabled by default; an explicit stored `false` still turns her off.

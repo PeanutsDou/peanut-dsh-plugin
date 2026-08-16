@@ -8,7 +8,7 @@
 
 [中文首页](README.md) · [Upstream](https://github.com/HanaAyane/dsh-reasoning-effort) · [This fork](https://github.com/PeanutsDou/peanut-dsh-plugin/tree/main/dsh-reasoning-effort) · [Report an issue](https://github.com/PeanutsDou/peanut-dsh-plugin/issues)
 
-[![fork 0.5.2](https://img.shields.io/badge/fork-0.5.2-6f83ff?style=flat-square)](https://github.com/PeanutsDou/peanut-dsh-plugin/tree/main/dsh-reasoning-effort)
+[![fork 0.6.0](https://img.shields.io/badge/fork-0.6.0-6f83ff?style=flat-square)](https://github.com/PeanutsDou/peanut-dsh-plugin/tree/main/dsh-reasoning-effort)
 [![DSH 0.1.0-rc.6](https://img.shields.io/badge/DSH-0.1.0--rc.6-8b5cf6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![MIT License](https://img.shields.io/badge/license-MIT-536990?style=flat-square)](LICENSE)
 
@@ -84,6 +84,10 @@ This fork defaults to the eight-frame whale-girl runner. To switch back to the p
 <img src="assets/readme/settings.webp" alt="The reasoning effort and whale-girl slider switches in DeepSeek Harness General Settings" width="1200">
 
 The runner changes only the thumb artwork. Snapping, keyboard control, radiation effects, and model selection remain unchanged. It animates faster while dragging and freezes on a stable frame when reduced motion is enabled.
+
+- **DeepSeek V4 Flash**: uses the original blue Q-version whale girl.
+- **DeepSeek V4 Pro**: uses the fork's new adult whale girl in black / charcoal / silver; the slider pulse and radiation effects switch to the same gray palette.
+
 
 The **Reasoning effort selector** switch on the same page disables the complete enhancement without uninstalling it. DSH's built-in model selector returns immediately. Both preferences stay in the current browser.
 
