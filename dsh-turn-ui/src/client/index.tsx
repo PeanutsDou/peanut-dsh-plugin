@@ -224,7 +224,7 @@ function restoreFoldRows(): void {
   for (const row of foldStyledRows) {
     const original = foldOriginalStyles.get(row)
     if (original === undefined) row.removeAttribute('style')
-    else row.style.cssText = original
+    else if (row.style.cssText !== original) row.style.cssText = original
   }
   foldStyledRows.clear()
 }
@@ -232,7 +232,7 @@ function restoreFoldRows(): void {
 function setFoldRowStyle(row: HTMLElement, cssText: string): void {
   if (!foldOriginalStyles.has(row)) foldOriginalStyles.set(row, row.style.cssText)
   foldStyledRows.add(row)
-  row.style.cssText = cssText
+  if (row.style.cssText !== cssText) row.style.cssText = cssText
 }
 
 function clearFoldOverlays(sessionId: string): void {
@@ -253,6 +253,41 @@ function formatFoldDuration(ms: number): string {
   return minutes > 0 ? `${minutes}m${seconds}s` : `${seconds}s`
 }
 
+const foldButtons = new WeakMap<HTMLElement, HTMLButtonElement>()
+
+function updateFoldButton(
+  overlay: HTMLElement,
+  button: HTMLButtonElement,
+  group: FoldGroup,
+  expanded: boolean,
+  onClick: () => void,
+): void {
+  const label = group.running ? '任务进行中' : group.interrupted ? '任务已中断' : '任务过程'
+  const parts = [`${group.processKeys.length} 个过程`]
+  if (group.toolCount > 0) parts.push(`${group.toolCount} 个工具`)
+  if (group.durationMs !== null) parts.push(formatFoldDuration(group.durationMs))
+  const meta = parts.join(' · ') + (expanded ? ' · 点击收起' : ' · 点击展开')
+  button.type = 'button'
+  button.className = 'dsh-turn-fold-overlay-btn'
+  button.setAttribute('aria-expanded', String(expanded))
+  button.onclick = onClick
+  if (button.dataset.label !== label || button.dataset.meta !== meta || button.dataset.expanded !== String(expanded)) {
+    button.dataset.label = label
+    button.dataset.meta = meta
+    button.dataset.expanded = String(expanded)
+    button.replaceChildren()
+    const dot = document.createElement('span')
+    dot.className = 'dsh-turn-fold-dot'
+    const labelNode = document.createElement('span')
+    labelNode.className = 'dsh-turn-fold-label'
+    labelNode.textContent = label
+    const metaNode = document.createElement('span')
+    metaNode.className = 'dsh-turn-fold-meta'
+    metaNode.textContent = meta
+    button.append(dot, labelNode, metaNode)
+  }
+}
+
 function applyFold(chat: unknown, sessionId: string, enabled: boolean): void {
   const port = scrollport()
   const flow = port?.querySelector<HTMLElement>('[data-chat-flow]')
@@ -271,30 +306,28 @@ function applyFold(chat: unknown, sessionId: string, enabled: boolean): void {
   })
 
   const portRect = port.getBoundingClientRect()
+  const currentRows = new Set<HTMLElement>()
   for (const group of groups) {
     const firstRow = flow.querySelector<HTMLElement>(`[data-chat-anchor-key="${CSS.escape(group.processKeys[0] ?? '')}"]`)
     if (firstRow === null) continue
     const rows = group.processKeys
       .map(key => flow.querySelector<HTMLElement>(`[data-chat-anchor-key="${CSS.escape(key)}"]`))
       .filter((row): row is HTMLElement => row !== null)
+    rows.forEach(row => currentRows.add(row))
     const key = stateKey(sessionId, group.turn)
     const expanded = foldExpandedBySession.get(key) ?? group.running
 
-    if (!expanded) {
-      rows.forEach((row, index) => {
-        if (index === 0) {
-          setFoldRowStyle(row, `${foldOriginalStyles.get(row) ?? ''};height:36px!important;min-height:36px!important;overflow:hidden!important;opacity:0!important`)
-        } else {
-          setFoldRowStyle(row, `${foldOriginalStyles.get(row) ?? ''};display:none!important`)
-        }
-      })
-    } else {
-      rows.forEach((row, index) => {
+    rows.forEach((row, index) => {
+      if (!expanded) {
+        const base = foldOriginalStyles.get(row) ?? ''
+        if (index === 0) setFoldRowStyle(row, `${base};height:36px!important;min-height:36px!important;overflow:hidden!important;opacity:0!important`)
+        else setFoldRowStyle(row, `${base};display:none!important`)
+      } else {
         const base = foldOriginalStyles.get(row) ?? ''
         if (index === 0) setFoldRowStyle(row, `${base};padding-top:30px!important`)
         else setFoldRowStyle(row, base)
-      })
-    }
+      }
+    })
 
     let overlay = port.querySelector<HTMLElement>(`.dsh-turn-fold-overlay[data-session-id="${sessionId}"][data-turn="${group.turn}"]`)
     if (overlay === null) {
@@ -305,38 +338,38 @@ function applyFold(chat: unknown, sessionId: string, enabled: boolean): void {
       port.append(overlay)
     }
     const rowRect = firstRow.getBoundingClientRect()
-    overlay.style.top = `${rowRect.top - portRect.top + port.scrollTop}px`
-    overlay.style.left = `${rowRect.left - portRect.left}px`
-    overlay.style.width = `${Math.max(160, rowRect.width)}px`
+    const top = `${rowRect.top - portRect.top + port.scrollTop}px`
+    const left = `${rowRect.left - portRect.left}px`
+    const width = `${Math.max(160, rowRect.width)}px`
+    if (overlay.style.top !== top) overlay.style.top = top
+    if (overlay.style.left !== left) overlay.style.left = left
+    if (overlay.style.width !== width) overlay.style.width = width
     overlay.classList.toggle('collapsed', !expanded)
     overlay.classList.toggle('expanded', expanded)
     overlay.classList.toggle('running', group.running)
     overlay.classList.toggle('interrupted', group.interrupted)
 
-    const button = overlay.firstElementChild as HTMLButtonElement | null ?? document.createElement('button')
-    button.type = 'button'
-    button.className = 'dsh-turn-fold-overlay-btn'
-    button.setAttribute('aria-expanded', String(expanded))
-    button.replaceChildren()
-    const dot = document.createElement('span')
-    dot.className = 'dsh-turn-fold-dot'
-    const label = document.createElement('span')
-    label.className = 'dsh-turn-fold-label'
-    label.textContent = group.running ? '任务进行中' : group.interrupted ? '任务已中断' : '任务过程'
-    const meta = document.createElement('span')
-    meta.className = 'dsh-turn-fold-meta'
-    const parts = [`${group.processKeys.length} 个过程`]
-    if (group.toolCount > 0) parts.push(`${group.toolCount} 个工具`)
-    if (group.durationMs !== null) parts.push(formatFoldDuration(group.durationMs))
-    meta.textContent = parts.join(' · ') + (expanded ? ' · 点击收起' : ' · 点击展开')
-    button.append(dot, label, meta)
-    button.onclick = () => {
+    let button = foldButtons.get(overlay)
+    if (button === undefined) {
+      button = document.createElement('button')
+      overlay.append(button)
+      foldButtons.set(overlay, button)
+    }
+    updateFoldButton(overlay, button, group, expanded, () => {
       const current = foldExpandedBySession.get(key) ?? group.running
       foldExpandedBySession.set(key, !current)
       foldUserToggled.add(key)
       applyFold(chat, sessionId, enabled)
+    })
+  }
+
+  for (const row of foldStyledRows) {
+    if (!currentRows.has(row)) {
+      const original = foldOriginalStyles.get(row)
+      if (original === undefined) row.removeAttribute('style')
+      else if (row.style.cssText !== original) row.style.cssText = original
+      foldStyledRows.delete(row)
     }
-    if (overlay.firstElementChild !== button) overlay.replaceChildren(button)
   }
 }
 
