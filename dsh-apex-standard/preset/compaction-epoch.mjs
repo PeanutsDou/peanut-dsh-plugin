@@ -9,8 +9,16 @@
  * first-token conditions the anchored presets exist to control. Promotion is
  * epoch-aware: only a durable promotion signal (`tool/call` and/or
  * `assistant/message`, per the caller's `promoteEvents`) recorded AFTER the
- * last `compaction/end` boundary counts as promoted. Before any compaction
- * the boundary is -1, which preserves the original one-shot semantics.
+ * last boundary counts as promoted. Before any compaction the boundary is -1,
+ * which preserves the original one-shot semantics.
+ *
+ * GUARDIAN RETRY BOUNDARY (v1.3.0): a `retryBoundary` predicate recognizes
+ * anchor-guardian's surface-replacing retry node. A retry is NOT a
+ * compaction: the model-visible surface is intentionally reset to a single
+ * fresh user message, so the next request must use the STRICT bootstrap
+ * catalog (no compaction work set). The tracker therefore distinguishes
+ * `mode: 'controlled'` (compaction) from `mode: 'fresh'` (first request or
+ * guardian retry) while keeping the boundary seq for event-scan purposes.
  *
  * State is memoized per session id and maintained incrementally through
  * `observe()`; a cold session scans its durable log once (so resume and
@@ -35,24 +43,33 @@
 /** Build one epoch-aware promotion tracker. */
 export function createEpochPromotion(promoteEvents, options = {}) {
   const includeSubagents = options.includeSubagents === true
+  const isRetryBoundary = typeof options.retryBoundary === 'function' ? options.retryBoundary : () => false
   const promote = new Set(promoteEvents)
-  /** sessionId -> { boundary, promoted, scanned } */
+  /** sessionId -> { boundary, promoted, mode, scanned } */
   const state = new Map()
 
   /** Scan a session's durable log from scratch (cold start / resume / staleness). */
   const scan = (session) => {
     let boundary = -1
     let promoted = false
+    let mode = 'fresh'
     for (const event of session.events) {
       const seq = event.seq ?? 0 // events without a seq are treated as post-boundary
       if (event.type === 'compaction/end') {
         boundary = seq
         promoted = false
+        mode = 'controlled'
+        continue
+      }
+      if (isRetryBoundary(event)) {
+        boundary = seq
+        promoted = false
+        mode = 'fresh'
         continue
       }
       if (promote.has(event.type) && seq > boundary) promoted = true
     }
-    const entry = { boundary, promoted, scanned: session.events.length }
+    const entry = { boundary, promoted, mode, scanned: session.events.length }
     state.set(session.id, entry)
     return entry
   }
@@ -61,17 +78,19 @@ export function createEpochPromotion(promoteEvents, options = {}) {
     /**
      * Current phase of the agent's session.
      * @param agent - the assembly/pre-step agent, or undefined outside an agent.
-     * @returns { boundary, promoted } — `boundary` is the last compaction/end
-     *   seq (-1 before any compaction); `promoted` is true when a durable
-     *   promotion signal exists after that boundary.
+     * @returns { boundary, promoted, mode } — `boundary` is the last
+     *   compaction/end or guardian-retry seq (-1 before either); `promoted`
+     *   is true when a durable promotion signal exists after that boundary;
+     *   `mode` is `'controlled'` after a compaction and `'fresh'` before one
+     *   or after a guardian retry.
      */
     status(agent) {
-      if (agent === undefined) return { boundary: -1, promoted: true }
+      if (agent === undefined) return { boundary: -1, promoted: true, mode: 'fresh' }
       const session = agent.session
-      if (session === undefined) return { boundary: -1, promoted: true }
+      if (session === undefined) return { boundary: -1, promoted: true, mode: 'fresh' }
       // By default subagents keep the full catalog from their very first
       // request; includeSubagents makes them follow the normal bootstrap phase.
-      if (!includeSubagents && (session.header?.delegationDepth ?? 0) > 0) return { boundary: -1, promoted: true }
+      if (!includeSubagents && (session.header?.delegationDepth ?? 0) > 0) return { boundary: -1, promoted: true, mode: 'fresh' }
       const entry = state.get(session.id)
       // rc.6-safe: re-scan whenever the durable log grew since the memo was
       // taken — whether or not the session has promoted. Without the live
@@ -87,7 +106,11 @@ export function createEpochPromotion(promoteEvents, options = {}) {
       entry.scanned += 1
       const seq = event.seq ?? 0
       if (event.type === 'compaction/end') {
-        state.set(session.id, { boundary: seq, promoted: false, scanned: entry.scanned })
+        state.set(session.id, { boundary: seq, promoted: false, mode: 'controlled', scanned: entry.scanned })
+        return
+      }
+      if (isRetryBoundary(event)) {
+        state.set(session.id, { boundary: seq, promoted: false, mode: 'fresh', scanned: entry.scanned })
         return
       }
       if (promote.has(event.type) && seq > entry.boundary && !entry.promoted) {

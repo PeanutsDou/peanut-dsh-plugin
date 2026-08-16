@@ -6,6 +6,7 @@
  * Run: node test/smoke.mjs
  */
 import * as plugin from '../preset/apex-bootstrap.mjs'
+import { classifyReasoning } from '../preset/anchor-guardian.mjs'
 
 const ALL_TOOLS = [
   'bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load',
@@ -61,6 +62,7 @@ function assembled() {
 
 const toolCall = (seq, name, args) => ({ type: 'tool/call', seq, data: { name, arguments: JSON.stringify(args ?? {}) } })
 const compactionEnd = (seq) => ({ type: 'compaction/end', seq })
+const guardianRetry = (seq) => ({ type: 'user/message', seq, surfaceOp: { op: 'replace', start: 0, end: 0 }, data: { id: `r${seq}`, role: 'user', content: [{ type: 'text', text: 'retry' }], source: { kind: 'plugin', plugin: 'anchor-guardian', form: 'retry' } } })
 
 const listeners = harness({
   bootstrapTools: ['bash', 'str_replace_editor'],
@@ -96,6 +98,14 @@ proEvents.push(toolCall(4, 'read'))
 check('post-compaction re-promotion does NOT carry pre-compaction unlocks',
   names(await runAssemble(pro)), ['bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load'])
 
+// ── Guardian retry boundary: fresh mode, NOT controlled mode ────────────
+proEvents.push(guardianRetry(7))
+check('post-guardian-retry fresh phase exposes the strict bootstrap pair (no compactionTools)',
+  names(await runAssemble(pro)), ['bash', 'str_replace_editor'])
+proEvents.push(toolCall(8, 'bash'))
+check('post-guardian-retry re-promotion narrows to the resident set',
+  names(await runAssemble(pro)), ['bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load'])
+
 // ── Pro discipline hint (opt-in enabled in this harness) ───────────────
 const step1 = await preStep({ agent: pro }, async () => ({ kind: 'enter', messages: [{ role: 'user', source: { kind: 'human' } }] }))
 check('pro hint injected once after promotion',
@@ -116,9 +126,10 @@ const stripped = await preStep({ agent: fresh }, async () => ({
     { role: 'user', source: { kind: 'skill-catalog' } },
     { role: 'user', source: { kind: 'agent-instructions' } },
     { role: 'user', source: { kind: 'skill-invocation' } },
+    { role: 'user', source: { kind: 'plugin', plugin: 'time-context' } },
   ],
 }))
-check('bootstrap strips catalog+digest but keeps human and user skill gestures',
+check('bootstrap strips catalog+digest+time-context but keeps human and user skill gestures',
   stripped.messages.map((m) => m.source.kind), ['human', 'skill-invocation'])
 
 // ── Flash path ──────────────────────────────────────────────────────────
@@ -147,8 +158,8 @@ check('missing bootstrap tools degrade to full catalog',
 // ── v1.2.0: per-epoch Pro discipline hint ───────────────────────────────
 // `pro` already got the hint in epoch -1 above. Push a compaction boundary
 // and re-promote: the hint must fire ONE more time for the new epoch.
-proEvents.push(compactionEnd(5))
-proEvents.push(toolCall(6, 'bash'))
+proEvents.push(compactionEnd(9))
+proEvents.push(toolCall(10, 'bash'))
 const step3 = await preStep({ agent: pro }, async () => ({ kind: 'enter', messages: [] }))
 check('pro discipline hint re-fires once per epoch (post-compaction)',
   step3.messages.filter((m) => m.source?.kind === 'apex-discipline-hint').length, 1)
@@ -193,6 +204,20 @@ check('instruction-hint stays silent in the post-compaction controlled phase',
 hintEvents.push(toolCall(3, 'bash'))
 check('instruction-hint re-fires in the new epoch after re-promotion',
   hintCount(await hintStep(hintAgent)), 1)
+hintEvents.push(guardianRetry(4))
+check('instruction-hint stays silent in the fresh phase after a guardian retry',
+  hintCount(await hintStep(hintAgent)), 0)
+hintEvents.push(toolCall(5, 'bash'))
+check('instruction-hint re-fires after the guardian-retry attempt promotes',
+  hintCount(await hintStep(hintAgent)), 1)
+
+// ── Guardian classifier ──────────────────────────────────────────────────
+check('classifier labels we-without-let-me as anchored',
+  classifyReasoning('We need inspect the repository before editing.'), { label: 'anchored', we: 1, letMe: 0 })
+check('classifier labels let-me as standard-like',
+  classifyReasoning('Let me run pwd and ls quickly.'), { label: 'standard-like', we: 0, letMe: 1 })
+check('classifier labels neither marker as ambiguous',
+  classifyReasoning('The task asks for a directory listing.'), { label: 'ambiguous', we: 0, letMe: 0 })
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

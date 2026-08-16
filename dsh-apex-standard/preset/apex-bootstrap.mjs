@@ -101,12 +101,15 @@ const ALLOWED_KEYS = new Set([
 ])
 
 /**
- * Context sources stripped from the first request by default: the two
- * automatic `agent/pre-step` injections Standard adds over Minimal —
- * the available-skills reminder (`skill-catalog`) and the AGENTS.md/CLAUDE.md
- * workspace digest (`agent-instructions`).
+ * Context sources stripped from the first request by default: the automatic
+ * `agent/pre-step` injections Standard adds over Minimal — the
+ * available-skills reminder (`skill-catalog`), the AGENTS.md/CLAUDE.md
+ * workspace digest (`agent-instructions`), and the web surface's time-context
+ * snapshot (whose source has `kind: 'plugin'` and `plugin: 'time-context'`).
+ * The filter matches EITHER the source kind OR, for plugin-kind sources, the
+ * plugin name, so both spellings can be listed.
  */
-const DEFAULT_SUPPRESSED_SOURCES = ['skill-catalog', 'agent-instructions']
+const DEFAULT_SUPPRESSED_SOURCES = ['skill-catalog', 'agent-instructions', 'time-context']
 
 /** The official Minimal preset's exact tool pair (issue #11 anchor). */
 const DEFAULT_BOOTSTRAP_TOOLS = ['bash', 'str_replace_editor']
@@ -143,6 +146,7 @@ const DEFAULT_FLASH_PERSONA =
  * diverged, leaving instruction-hint on the stale upstream logic.
  */
 import { createEpochPromotion } from './compaction-epoch.mjs'
+import { isGuardianRetryBoundary } from './guardian-boundary.mjs'
 
 /** True when the routed model id is a Flash-family model. */
 function isFlashModel(modelId) {
@@ -282,7 +286,7 @@ export function apply(ctx, config) {
   const proDisciplineHint = optionalBoolean(source.proDisciplineHint, 'proDisciplineHint', false)
   const proDisciplineHintText = optionalNonEmptyString(source.proDisciplineHintText, 'proDisciplineHintText', DEFAULT_PRO_DISCIPLINE_HINT)
 
-  const promotion = createEpochPromotion(promoteEvents, { includeSubagents })
+  const promotion = createEpochPromotion(promoteEvents, { includeSubagents, retryBoundary: isGuardianRetryBoundary })
   ctx.on('session/event', (session, event) => promotion.observe(session, event))
 
   let warned = false
@@ -373,11 +377,14 @@ export function apply(ctx, config) {
         const keep = new Set([...bootstrapTools, ...RESIDENT_DISCOVERY_TOOLS, ...unlockedFor(agent?.session, status.boundary)])
         return keepTools(withSections, keep, false)
       }
-      // Controlled phase: the bootstrap pair; after a compaction, plus the
-      // compaction work set so mid-task work can continue.
-      const { boundary } = status
+      // Controlled vs fresh phase: after a compaction the bootstrap pair
+      // widens with the compaction work set so mid-task work can continue;
+      // after a guardian retry (or before any boundary) it stays STRICT —
+      // the retry must see the same Minimal-exact two-tool surface as a
+      // brand-new session.
+      const { boundary, mode } = status
       const keep = new Set(bootstrapTools)
-      if (boundary >= 0) for (const toolName of compactionTools) keep.add(toolName)
+      if (mode === 'controlled') for (const toolName of compactionTools) keep.add(toolName)
       return keepTools(withSections, keep, true)
     } catch (error) {
       // A filter bug must never brick a session: degrade to the full catalog.
@@ -448,7 +455,10 @@ export function apply(ctx, config) {
       if (!Array.isArray(decision.messages)) return decision
       const kept = decision.messages.filter((message) => {
         const kind = message?.source?.kind
-        return typeof kind !== 'string' || !suppressedSources.has(kind)
+        const plugin = message?.source?.plugin
+        if (typeof kind === 'string' && suppressedSources.has(kind)) return false
+        if (kind === 'plugin' && typeof plugin === 'string' && suppressedSources.has(plugin)) return false
+        return true
       })
       return kept.length === decision.messages.length ? decision : { ...decision, messages: kept }
     } catch (error) {

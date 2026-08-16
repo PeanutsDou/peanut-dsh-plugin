@@ -20,13 +20,14 @@ DeepSeek V4 系列模型对 agent scaffold（系统提示词、API 可见工具�
 1. **双渠道统一**：同一预设覆盖 DeepSeek 官方 API 与 opencode-go 订阅接口，四组模型组合（Pro / Flash × 两渠道）自动适配。
 2. **模型感知分流**：依据路由模型 id 是否含 `flash` 自动选择路径（Pro 路径 / Flash 路径），与 provider 无关，支持手动钉死。
 3. **两阶段工具锚定**：首个请求仅暴露官方 Minimal 预设的真实工具对（`bash` + `str_replace_editor`），首个持久晋升信号后按路径切换目录。
-4. **Pro 常驻目录**：晋升后 Pro 保持最小常驻集（锚定对 + 三个发现工具），重型工具经 `dev_tool_search` 按需解锁，避免轨迹回归。
-5. **Flash 神模式 persona**：w7 五锚（分类、回顾、反跑题、深度思考、决策闭环）静态挂载，含 P10 收敛绑定，避免"深度思考跑满预算"陷阱。
-6. **rc.6 兼容**：不依赖 rc.6 失效的 `session/event` 馈送与 `agent.inbox`；晋升与压缩边界通过 durable 日志增长重扫兜底。
-7. **epoch 感知管理**：压缩边界后自动回退受控阶段；解锁集合与一次性提示均按 epoch 重置/重发，长对话轨迹不漂移。
-8. **零额外调用、零合成消息**：无 warmup 轮、无 replay、无注入消息，规避历史上合成消息缺 id 导致的会话历史腐蚀事故。
-9. **降级纪律**：组件缺失、过滤器异常、配置错误均按既定策略降级或快速失败，不使会话瘫痪。
-10. **全平台**：Windows（Git Bash 自动探测）、Linux、macOS；插件零依赖、无网络请求、无遥测。
+4. **锚定释放门（anchor-guardian）**：首块 reasoning 必须命中 `we` 且不含 `let me` 才放行；浅轨迹会被提前中止、surface 回滚并自动重试，达到 `maxAttempts` 后强制 fail-open。
+5. **Pro 常驻目录**：晋升后 Pro 保持最小常驻集（锚定对 + 三个发现工具），重型工具经 `dev_tool_search` 按需解锁，避免轨迹回归。
+6. **Flash 神模式 persona**：w7 五锚（分类、回顾、反跑题、深度思考、决策闭环）静态挂载，含 P10 收敛绑定，避免"深度思考跑满预算"陷阱。
+7. **rc.6 兼容**：不依赖 rc.6 失效的 `session/event` 馈送与 `agent.inbox`；晋升与压缩边界通过 durable 日志增长重扫兜底。
+8. **epoch 感知管理**：压缩边界后自动回退受控阶段；解锁集合与一次性提示均按 epoch 重置/重发，长对话轨迹不漂移。
+9. **零额外模型调用**：无 warmup 轮、无 replay。anchor-guardian 失败重试会写入一条带稳定 id 的 user 侧 surface 替换节点（compaction 同款机制），不是伪造 assistant 历史。
+10. **降级纪律**：组件缺失、过滤器异常、配置错误均按既定策略降级或快速失败，不使会话瘫痪。
+11. **全平台**：Windows（Git Bash 自动探测）、Linux、macOS；插件零依赖、无网络请求、无遥测。
 
 ## 3. 技术栈
 
@@ -110,8 +111,9 @@ agent-presets:
 1. 首请求 `tools` 数组恰好为 `["bash", "str_replace_editor"]`；
 2. 首请求不含 AGENTS.md/CLAUDE.md 摘要与 `<available_skills>` 提醒；Pro 的 system 为 Minimal 原文，Flash 的 system 为神模式五锚；
 3. 首个 `tool/call` 或 `assistant/message` 之后：Pro 的下一 header 为常驻集（锚定对 + 三个发现工具），Flash 为完整 Standard 目录；
-4. 若配置了 `bootstrapMaxTokens`，首请求 `config.maxTokens` 记录该值且晋升后被剥离；
-5. 可选：统计 reasoning 词频，锚定生效时 `let me` 趋近于 0、`we` 高频、过程可见回复仅最终一次。
+4. anchor-guardian 命中浅首块时：当前 turn 被提前中止，出现一条 `surfaceOp: replace` 的 guardian retry 用户消息，随后自动开启新 turn，新请求 header 仍为 `["bash", "str_replace_editor"]`；
+5. 若配置了 `bootstrapMaxTokens`，首请求 `config.maxTokens` 记录该值且晋升后被剥离；
+6. 可选：统计 reasoning 词频，锚定生效时 `let me` 趋近于 0、`we` 高频、过程可见回复仅最终一次。
 
 ### 5.3 常见调优
 
@@ -133,7 +135,7 @@ agent-presets:
 | `bootstrapTools` | `[bash, str_replace_editor]` | 首请求可见工具（Minimal 真实工具对） |
 | `promoteOn` | `either` | 晋升触发：`either` / `tool-call` / `assistant-message` |
 | `bootstrapMaxTokens` | 未设 | 首请求输出上限（opt-in，晋升后显式剥离） |
-| `suppressedContextSources` | `[agent-instructions, skill-catalog]` | bootstrap 期剥离的注入源；`[]` 禁用过滤 |
+| `suppressedContextSources` | `[agent-instructions, skill-catalog, time-context]` | bootstrap 期剥离的注入源（kind 或 plugin 名）；`[]` 禁用过滤 |
 | `compactionTools` | `[read, edit, glob, grep]` | 压缩后、再晋升前的受控工具集 |
 | `forcePath` | `auto` | 路径钉死：`auto` / `pro` / `flash` |
 | `flashGuidance` | `true` | Flash 神模式 persona 开关 |
@@ -142,6 +144,18 @@ agent-presets:
 | `includeSubagents` | `false` | 子代理是否也走 bootstrap 阶段 |
 | `proDisciplineHint` | `false` | Pro 晋升后每 epoch 注入一次长任务纪律提示 |
 | `proDisciplineHintText` | 内置纪律提示文本 | 自定义提示内容 |
+
+`anchor-guardian` 行：
+
+| 键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 释放门开关 |
+| `maxAttempts` | `3` | 锚定尝试上限；耗尽后 fail-open |
+| `earlyAbort` | `true` | 收到浅首块即取消本轮，再回滚重试 |
+| `wakeMode` | `followup` | turn-stopping 兜底路径的重试方式：`followup` / `steer` |
+| `retryOnCompaction` | `true` | 压缩后的“第二个首请求”是否同样受门控 |
+| `retryPrefix` | 内置文本 | 重试节点的引导文本 |
+| `wakeText` | `Continue from the instruction immediately above.` | 自动续跑的 wake 消息 |
 
 ## 7. 设计原理
 
@@ -200,14 +214,15 @@ agent-presets:
 ## 8. 测试
 
 ```bash
-node test/smoke.mjs
+npm test
+# 或：node test/smoke.mjs && node test/guardian.smoke.mjs
 ```
 
-`test/smoke.mjs` 为零依赖冒烟测试，覆盖 21 项断言：双路径锚定、晋升、解锁、压缩回退、解锁不跨 epoch、提示每 epoch 一次、无事件馈送的 rc.6 降级路径、降级目录。全部通过输出 `ALL PASS`。
+`test/smoke.mjs` 覆盖 28 项断言：双路径锚定、guardian 重试边界的 fresh 目录、晋升、解锁、压缩回退、注入剥离（含 time-context）、提示每 epoch 一次、无事件馈送的 rc.6 降级路径、降级目录。`test/guardian.smoke.mjs` 覆盖 7 项断言：浅首块 early-abort、surface 替换节点、followup 唤醒、重试后达标释放、分类器。全部通过输出 `ALL PASS`。
 
 ## 9. 已知限制
 
-- **证据边界**：98/99 与神模式结论来自单一题面 / 单任务对照（n=2 / n=1），不构成跨任务普适性证明；
+- **证据边界**：98/99 与神模式结论来自单一题面 / 单任务对照（n=2 / n=1），不构成跨任务普适性证明；guardian 的自动重试在本地真实 loop 上验证过（surface 回滚 + followup/steer + early-abort 三条路径），但网页 UI 转录会保留被回滚的失败回合，且重试会按尝试次数增加首轮延迟与 token 成本；
 - **C4 残余风险**：Pro 在纯 greenfield 创意构建上存在 spec 侧反路由证据（Mario 6/10 vs PTC 10/10），预设层无代价方案，建议此类任务与官方 PTC/code preset 对照使用；
 - **C5 相关任务链**：Flash 静态引导在紧密相关的任务链上实测为负收益，已提供 `flashGuidance: false` 开关；
 - **宿主能力边界**：compaction 摘要质量、token 计量等属 dsh 宿主能力，agent-plane 无法控制；

@@ -14,7 +14,7 @@ DeepSeek Harness（DSH）个人插件合集——集中管理我自己维护的 
 | [dsh-usage-monitor](dsh-usage-monitor) | API 余额 + token 日/月用量监控：底部状态栏、悬浮详情窗、缓存命中统计 | ✅ 可用 |
 | [dsh-turn-ui](dsh-turn-ui) | 长会话阅读优化：按轮次折叠过程输出与工具调用 + 左侧轮次导航条（含 DSH 核心补丁脚本） | ✅ 可用 |
 | [dsh-reasoning-effort](dsh-reasoning-effort) | Codex 风格模型 + 推理强度滑块（fork 自 [HanaAyane/dsh-reasoning-effort](https://github.com/HanaAyane/dsh-reasoning-effort)，v0.5.0 → 本库 0.6.0） | ✅ 可用 |
-| [dsh-apex-standard](dsh-apex-standard) | 「梁神模式-win」预设快照备份：V4 Pro/Flash 两阶段锚定、Windows Git Bash 自动探测、晋升后最小常驻目录（上游 [rinDBeans/dsh-apex-standard](https://github.com/rinDBeans/dsh-apex-standard)，v1.2.1 / `42da9ba`，已审计） | ✅ 备份 |
+| [dsh-apex-standard](dsh-apex-standard) | 「梁神模式-win」预设：V4 Pro/Flash 两阶段锚定、anchor-guardian 浅轨迹自动回滚重试、Windows Git Bash 自动探测、晋升后最小常驻目录（fork 自上游 [rinDBeans/dsh-apex-standard](https://github.com/rinDBeans/dsh-apex-standard) v1.2.1 / `42da9ba`，本 fork v1.3.0） | ✅ 已修改 |
 | [dsh-market](dsh-market) | DSH 可视化插件市场快照备份（上游 [dsh-market/dsh-market](https://github.com/dsh-market/dsh-market)，v1.9.0 / `1d338fe`，已审计） | ✅ 备份 |
 | [dsh-find-plugin](dsh-find-plugin) | 会话内实时搜索 DSH 插件工具快照备份（上游 [awesome-dsh-plugin/dsh-find-plugin](https://github.com/awesome-dsh-plugin/dsh-find-plugin)，v0.3.6 / `e75dc2e`，已审计） | ✅ 备份 |
 
