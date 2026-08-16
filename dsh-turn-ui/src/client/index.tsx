@@ -63,8 +63,8 @@ interface RailFrame {
   height: number
 }
 
-const RAIL_WIDTH = 8
-const RAIL_HOVER_WIDTH = 20
+const RAIL_WIDTH = 10
+const RAIL_HOVER_WIDTH = 24
 const TOP_OFFSET = 64
 
 function scrollport(): HTMLElement | null {
@@ -77,14 +77,16 @@ function ensureStyles(): void {
   const style = document.createElement('style')
   style.id = id
   style.textContent = `
-.dsh-turn-rail{position:fixed;z-index:1300;width:8px;pointer-events:none;transition:width .12s ease}
-.dsh-turn-rail:hover{width:20px}
-.dsh-turn-rail-track{position:absolute;inset:0;display:flex;flex-direction:column;align-items:flex-start;gap:7px;padding:8px 0;pointer-events:auto}
-.dsh-turn-bar{position:relative;flex:0 0 2px;width:100%;height:2px;border:0;border-radius:0;padding:0;background:var(--dsw-alias-label-caption);cursor:pointer;opacity:.55;transition:opacity .12s,background .12s}
+.dsh-turn-rail{position:fixed;z-index:1300;width:10px;pointer-events:none;transition:width .12s ease}
+.dsh-turn-rail:hover{width:24px}
+.dsh-turn-rail-track{position:absolute;inset:0;display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:8px 0;pointer-events:auto}
+.dsh-turn-bar{position:relative;flex:0 0 6px;width:100%;height:6px;border:0;border-radius:0;padding:0;background:var(--dsw-alias-label-caption);cursor:pointer;opacity:.55;transition:opacity .12s,background .12s}
 .dsh-turn-bar:hover,.dsh-turn-bar.active{opacity:1;background:var(--dsw-alias-label-primary)}
 .dsh-turn-bar.running{animation:dsh-turn-bar-pulse 1.2s ease-in-out infinite}
 @keyframes dsh-turn-bar-pulse{0%,100%{opacity:1}50%{opacity:.3}}
-.dsh-turn-rail-tip{position:absolute;left:calc(100% + 8px);top:50%;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;white-space:nowrap;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.2);transform:translateY(-50%);z-index:2}
+.dsh-turn-rail-tip{position:absolute;left:calc(100% + 10px);top:50%;display:block;max-width:280px;padding:6px 9px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;white-space:nowrap;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.2);transform:translateY(-50%);z-index:2}
+.dsh-turn-rail-tip-title{display:block;font-weight:600}
+.dsh-turn-rail-tip-summary{display:block;margin-top:2px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.5;overflow:hidden;text-overflow:ellipsis}
 .dsh-turn-ui-card{list-style:none;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}
 .dsh-turn-ui-card-header{width:100%;appearance:none;border:0;background:none;font:inherit;color:inherit;text-align:left;cursor:pointer;padding:14px 16px}
 .dsh-turn-ui-card-header span{display:block;font-size:15px;font-weight:600}
@@ -95,15 +97,53 @@ function ensureStyles(): void {
   document.head.append(style)
 }
 
+function extractTurnSummary(node: unknown): string | undefined {
+  if (node === null || typeof node !== 'object') return undefined
+  const record = node as { kind?: unknown; data?: { content?: unknown } }
+  if (record.kind !== 'user') return undefined
+  const content = record.data?.content
+  if (!Array.isArray(content)) return undefined
+  for (const block of content) {
+    if (block === null || typeof block !== 'object') continue
+    const item = block as { type?: unknown; text?: unknown }
+    if (item.type === 'text' && typeof item.text === 'string') {
+      const text = item.text.replace(/\s+/g, ' ').trim()
+      if (text !== '') return text.length > 70 ? text.slice(0, 70) + '…' : text
+    }
+  }
+  return undefined
+}
+
+function buildTurnSummaries(chat: unknown, turnOrder: readonly number[]): ReadonlyMap<number, string> {
+  const summaries = new Map<number, string>()
+  const snapshot = chat as {
+    locations?: { getTurn?: (turn: number) => readonly string[] | undefined }
+    nodes?: { get?: (key: string) => unknown }
+  }
+  for (const turn of turnOrder) {
+    const keys = snapshot.locations?.getTurn?.(turn) ?? []
+    for (const key of keys) {
+      const summary = extractTurnSummary(snapshot.nodes?.get?.(key))
+      if (summary !== undefined) {
+        summaries.set(turn, summary)
+        break
+      }
+    }
+  }
+  return summaries
+}
+
 function TurnRail({ useSession, sessionId }: RailProps) {
   const settings = useSyncExternalStore(subscribeClientSettings, getClientSettingsSnapshot)
   const timeline = useSession(snapshot => snapshot.chat.timeline)
+  const chat = useSession(snapshot => snapshot.chat)
   const turnOrder = timeline.turnOrder
   const [frame, setFrame] = useState<RailFrame | null>(null)
   const [activeTurn, setActiveTurn] = useState<number | null>(turnOrder[0] ?? null)
   const [hoverTurn, setHoverTurn] = useState<number | null>(null)
 
   const orderKey = useMemo(() => turnOrder.join(','), [turnOrder])
+  const turnSummaries = useMemo(() => buildTurnSummaries(chat, turnOrder), [chat, orderKey])
 
   useEffect(() => {
     ensureStyles()
@@ -206,8 +246,13 @@ function TurnRail({ useSession, sessionId }: RailProps) {
             >
               {hoverTurn === turn ? (
                 <span className="dsh-turn-rail-tip">
-                  第 {turn + 1} 轮
-                  {running ? ' · 运行中' : ''}
+                  <span className="dsh-turn-rail-tip-title">
+                    第 {turn + 1} 轮
+                    {running ? ' · 运行中' : ''}
+                  </span>
+                  <span className="dsh-turn-rail-tip-summary">
+                    {turnSummaries.get(turn) ?? '（无文字摘要）'}
+                  </span>
                 </span>
               ) : null}
             </button>
