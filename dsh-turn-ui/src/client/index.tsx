@@ -21,6 +21,7 @@ export const inject = ['slots', 'settingsScope']
 type RailProps = PropsRuntime<'conversation.session.header.utilities'>
 
 interface TurnUiClientSettings {
+  turnFoldEnabled: boolean
   turnRailEnabled: boolean
 }
 
@@ -33,7 +34,7 @@ interface ClientSettingsStore {
 }
 
 const clientSettingsStore: ClientSettingsStore = {
-  current: { turnRailEnabled: true },
+  current: { turnFoldEnabled: true, turnRailEnabled: true },
   listeners: new Set<() => void>(),
   getSnapshot(): TurnUiClientSettings {
     return this.current
@@ -43,7 +44,7 @@ const clientSettingsStore: ClientSettingsStore = {
     return () => { this.listeners.delete(listener) }
   },
   set(next: TurnUiClientSettings): void {
-    if (next.turnRailEnabled === this.current.turnRailEnabled) return
+    if (next.turnFoldEnabled === this.current.turnFoldEnabled && next.turnRailEnabled === this.current.turnRailEnabled) return
     this.current = next
     for (const listener of this.listeners) listener()
   },
@@ -99,6 +100,291 @@ function ensureStyles(): void {
 .dsh-turn-ui-toggle input{accent-color:var(--dsw-alias-brand-primary)}
 `
   document.head.append(style)
+}
+
+// ===== TurnFoldAdapter: external DOM adapter, no DSH core changes =====
+
+interface FoldGroup {
+  turn: number
+  processKeys: readonly string[]
+  running: boolean
+  interrupted: boolean
+  toolCount: number
+  durationMs: number | null
+}
+
+const foldStyledRows = new Set<HTMLElement>()
+const foldOriginalStyles = new WeakMap<HTMLElement, string>()
+const foldExpandedBySession = new Map<string, boolean>()
+const foldUserToggled = new Set<string>()
+let foldApplying = false
+
+function ensureFoldStyles(): void {
+  const id = 'dsh-turn-fold-adapter-styles'
+  if (document.getElementById(id) !== null) return
+  const style = document.createElement('style')
+  style.id = id
+  style.textContent = `
+.dsh-turn-fold-overlay{position:absolute;z-index:40;pointer-events:none;box-sizing:border-box}
+.dsh-turn-fold-overlay-btn{pointer-events:auto;appearance:none;display:flex;align-items:center;gap:8px;width:100%;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;cursor:pointer;text-align:left}
+.dsh-turn-fold-overlay.collapsed .dsh-turn-fold-overlay-btn{height:34px;padding:0 12px}
+.dsh-turn-fold-overlay.expanded .dsh-turn-fold-overlay-btn{width:auto;height:26px;padding:0 10px;opacity:.92}
+.dsh-turn-fold-overlay-btn:hover{border-color:var(--dsw-alias-label-dimmed)}
+.dsh-turn-fold-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-state-success-primary)}
+.dsh-turn-fold-overlay.running .dsh-turn-fold-dot{background:var(--dsw-alias-state-business-primary);animation:dsh-turn-fold-pulse 1.2s ease-in-out infinite}
+.dsh-turn-fold-overlay.interrupted .dsh-turn-fold-dot{background:var(--dsw-alias-state-error-primary)}
+.dsh-turn-fold-label{flex:none;font-weight:600}
+.dsh-turn-fold-meta{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
+@keyframes dsh-turn-fold-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+`
+  document.head.append(style)
+}
+
+function turnOfNode(node: unknown): number | null {
+  if (node === null || typeof node !== 'object') return null
+  const location = (node as { location?: unknown }).location as {
+    kind?: unknown
+    turn?: { turn?: unknown }
+  } | undefined
+  if (location?.kind === 'step' || location?.kind === 'turn') {
+    const turn = location.turn?.turn
+    return typeof turn === 'number' ? turn : null
+  }
+  return null
+}
+
+function buildFoldGroups(chat: unknown): FoldGroup[] {
+  const snapshot = chat as {
+    order?: readonly string[]
+    nodes?: ReadonlyMap<string, unknown>
+    timeline?: { turns?: ReadonlyMap<number, { status?: string; start?: { time?: number }; end?: { time?: number } }> }
+    locations?: { getTurn?: (turn: number) => readonly string[] | undefined }
+  }
+  const order = snapshot.order ?? []
+  const nodes = snapshot.nodes ?? new Map<string, unknown>()
+  const turns = snapshot.timeline?.turns ?? new Map<number, { status?: string; start?: { time?: number }; end?: { time?: number } }>()
+
+  const closingSeqByTurn = new Map<number, number>()
+  const finalKeyByTurn = new Map<number, string>()
+  const keysByTurn = new Map<number, string[]>()
+  for (const key of order) {
+    const node = nodes.get(key)
+    const turn = turnOfNode(node)
+    if (turn === null) continue
+    const list = keysByTurn.get(turn) ?? []
+    list.push(key)
+    keysByTurn.set(turn, list)
+    const record = node as { kind?: unknown; data?: { closing?: { finalNode?: { seq?: unknown } }; finalNode?: { seq?: unknown } } }
+    if (record.kind === 'turn-tail') {
+      const seq = record.data?.closing?.finalNode?.seq
+      if (typeof seq === 'number') closingSeqByTurn.set(turn, seq)
+    }
+  }
+  for (const key of order) {
+    const node = nodes.get(key)
+    const turn = turnOfNode(node)
+    if (turn === null) continue
+    const record = node as { kind?: unknown; data?: { finalNode?: { seq?: unknown } } }
+    if (record.kind === 'assistant-step') {
+      const seq = record.data?.finalNode?.seq
+      if (typeof seq === 'number' && seq === closingSeqByTurn.get(turn)) finalKeyByTurn.set(turn, key)
+    }
+  }
+
+  const processKinds = new Set(['context', 'assistant-step', 'tool-call', 'model-retry', 'manual-compaction'])
+  const groups: FoldGroup[] = []
+  for (const [turn, keys] of keysByTurn) {
+    const processKeys = keys.filter(key => {
+      const node = nodes.get(key)
+      return node !== undefined && processKinds.has((node as { kind?: string }).kind ?? '') && key !== finalKeyByTurn.get(turn)
+    })
+    if (processKeys.length === 0) continue
+    const toolCount = processKeys.filter(key => (nodes.get(key) as { kind?: string } | undefined)?.kind === 'tool-call').length
+    const interrupted = processKeys.some(key => {
+      const record = nodes.get(key) as { kind?: string; data?: { status?: string } } | undefined
+      return record?.kind === 'assistant-step' && record.data?.status === 'interrupted'
+    })
+    const info = turns.get(turn)
+    const durationMs = info?.start?.time !== undefined && info?.end?.time !== undefined
+      ? Math.max(0, info.end.time - info.start.time)
+      : null
+    groups.push({
+      turn,
+      processKeys,
+      running: info?.status === 'open',
+      interrupted,
+      toolCount,
+      durationMs,
+    })
+  }
+  return groups
+}
+
+function restoreFoldRows(): void {
+  for (const row of foldStyledRows) {
+    const original = foldOriginalStyles.get(row)
+    if (original === undefined) row.removeAttribute('style')
+    else row.style.cssText = original
+  }
+  foldStyledRows.clear()
+}
+
+function setFoldRowStyle(row: HTMLElement, cssText: string): void {
+  if (!foldOriginalStyles.has(row)) foldOriginalStyles.set(row, row.style.cssText)
+  foldStyledRows.add(row)
+  row.style.cssText = cssText
+}
+
+function clearFoldOverlays(sessionId: string): void {
+  const port = scrollport()
+  port?.querySelectorAll<HTMLElement>('.dsh-turn-fold-overlay').forEach(overlay => {
+    if (overlay.dataset.sessionId === sessionId) overlay.remove()
+  })
+}
+
+function stateKey(sessionId: string, turn: number): string {
+  return `${sessionId}:${turn}`
+}
+
+function formatFoldDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000))
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  return minutes > 0 ? `${minutes}m${seconds}s` : `${seconds}s`
+}
+
+function applyFold(chat: unknown, sessionId: string, enabled: boolean): void {
+  const port = scrollport()
+  const flow = port?.querySelector<HTMLElement>('[data-chat-flow]')
+  if (port === null || flow == null) return
+  if (!enabled) {
+    restoreFoldRows()
+    clearFoldOverlays(sessionId)
+    return
+  }
+  if (getComputedStyle(port).position === 'static') port.style.position = 'relative'
+
+  const groups = buildFoldGroups(chat)
+  const liveTurns = new Set(groups.map(group => group.turn))
+  port.querySelectorAll<HTMLElement>('.dsh-turn-fold-overlay').forEach(overlay => {
+    if (overlay.dataset.sessionId === sessionId && !liveTurns.has(Number(overlay.dataset.turn))) overlay.remove()
+  })
+
+  const portRect = port.getBoundingClientRect()
+  for (const group of groups) {
+    const firstRow = flow.querySelector<HTMLElement>(`[data-chat-anchor-key="${CSS.escape(group.processKeys[0] ?? '')}"]`)
+    if (firstRow === null) continue
+    const rows = group.processKeys
+      .map(key => flow.querySelector<HTMLElement>(`[data-chat-anchor-key="${CSS.escape(key)}"]`))
+      .filter((row): row is HTMLElement => row !== null)
+    const key = stateKey(sessionId, group.turn)
+    const expanded = foldExpandedBySession.get(key) ?? group.running
+
+    if (!expanded) {
+      rows.forEach((row, index) => {
+        if (index === 0) {
+          setFoldRowStyle(row, `${foldOriginalStyles.get(row) ?? ''};height:36px!important;min-height:36px!important;overflow:hidden!important;opacity:0!important`)
+        } else {
+          setFoldRowStyle(row, `${foldOriginalStyles.get(row) ?? ''};display:none!important`)
+        }
+      })
+    } else {
+      rows.forEach((row, index) => {
+        const base = foldOriginalStyles.get(row) ?? ''
+        if (index === 0) setFoldRowStyle(row, `${base};padding-top:30px!important`)
+        else setFoldRowStyle(row, base)
+      })
+    }
+
+    let overlay = port.querySelector<HTMLElement>(`.dsh-turn-fold-overlay[data-session-id="${sessionId}"][data-turn="${group.turn}"]`)
+    if (overlay === null) {
+      overlay = document.createElement('div')
+      overlay.className = 'dsh-turn-fold-overlay'
+      overlay.dataset.sessionId = sessionId
+      overlay.dataset.turn = String(group.turn)
+      port.append(overlay)
+    }
+    const rowRect = firstRow.getBoundingClientRect()
+    overlay.style.top = `${rowRect.top - portRect.top + port.scrollTop}px`
+    overlay.style.left = `${rowRect.left - portRect.left}px`
+    overlay.style.width = `${Math.max(160, rowRect.width)}px`
+    overlay.classList.toggle('collapsed', !expanded)
+    overlay.classList.toggle('expanded', expanded)
+    overlay.classList.toggle('running', group.running)
+    overlay.classList.toggle('interrupted', group.interrupted)
+
+    const button = overlay.firstElementChild as HTMLButtonElement | null ?? document.createElement('button')
+    button.type = 'button'
+    button.className = 'dsh-turn-fold-overlay-btn'
+    button.setAttribute('aria-expanded', String(expanded))
+    button.replaceChildren()
+    const dot = document.createElement('span')
+    dot.className = 'dsh-turn-fold-dot'
+    const label = document.createElement('span')
+    label.className = 'dsh-turn-fold-label'
+    label.textContent = group.running ? '任务进行中' : group.interrupted ? '任务已中断' : '任务过程'
+    const meta = document.createElement('span')
+    meta.className = 'dsh-turn-fold-meta'
+    const parts = [`${group.processKeys.length} 个过程`]
+    if (group.toolCount > 0) parts.push(`${group.toolCount} 个工具`)
+    if (group.durationMs !== null) parts.push(formatFoldDuration(group.durationMs))
+    meta.textContent = parts.join(' · ') + (expanded ? ' · 点击收起' : ' · 点击展开')
+    button.append(dot, label, meta)
+    button.onclick = () => {
+      const current = foldExpandedBySession.get(key) ?? group.running
+      foldExpandedBySession.set(key, !current)
+      foldUserToggled.add(key)
+      applyFold(chat, sessionId, enabled)
+    }
+    if (overlay.firstElementChild !== button) overlay.replaceChildren(button)
+  }
+}
+
+function TurnFoldAdapter({ useSession, sessionId }: RailProps) {
+  const settings = useSyncExternalStore(subscribeClientSettings, getClientSettingsSnapshot)
+  const chat = useSession(snapshot => snapshot.chat)
+  useEffect(() => {
+    ensureFoldStyles()
+    let raf = 0
+    let interval = 0
+    let observer: MutationObserver | undefined
+    let observedPort: HTMLElement | null = null
+    const run = (): void => {
+      if (foldApplying) return
+      foldApplying = true
+      try { applyFold(chat, sessionId, settings.turnFoldEnabled) } finally { foldApplying = false }
+    }
+    const schedule = (): void => {
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(run)
+    }
+    const attach = (port: HTMLElement): void => {
+      if (observedPort === port) return
+      observedPort = port
+      observer = new MutationObserver(schedule)
+      observer.observe(port, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-chat-anchor-key'] })
+    }
+    interval = window.setInterval(() => {
+      const port = scrollport()
+      if (port !== null) {
+        attach(port)
+        window.clearInterval(interval)
+        schedule()
+      }
+    }, 500)
+    schedule()
+    const onResize = (): void => schedule()
+    window.addEventListener('resize', onResize)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.clearInterval(interval)
+      window.removeEventListener('resize', onResize)
+      observer?.disconnect()
+      restoreFoldRows()
+      clearFoldOverlays(sessionId)
+    }
+  }, [chat, sessionId, settings.turnFoldEnabled])
+  return null
 }
 
 function extractTurnSummary(node: unknown): string | undefined {
@@ -307,6 +593,10 @@ function TurnUiSettingsCard(props: {
       {open ? (
         <div className="dsh-turn-ui-card-body">
           <label className="dsh-turn-ui-toggle">
+            <input type="checkbox" checked={settings.turnFoldEnabled} onChange={event => { props.set('turnFoldEnabled', event.currentTarget.checked) }} />
+            按轮折叠过程输出（上下文注入 / 思考 / 工具 / 产物）
+          </label>
+          <label className="dsh-turn-ui-toggle">
             <input type="checkbox" checked={settings.turnRailEnabled} onChange={event => { props.set('turnRailEnabled', event.currentTarget.checked) }} />
             显示左侧轮次导航条
           </label>
@@ -324,9 +614,11 @@ export function apply(ctx: ClientContext): void {
       const snap = settingsScope!.getSnapshot()
       const value = (snap.value ?? {}) as Record<string, unknown>
       const next: TurnUiClientSettings = {
+        turnFoldEnabled: value.turnFoldEnabled !== false,
         turnRailEnabled: value.turnRailEnabled !== false,
       }
       clientSettingsStore.set(next)
+      document.documentElement.dataset.turnFoldDisabled = next.turnFoldEnabled ? '0' : '1'
       document.documentElement.dataset.turnRailDisabled = next.turnRailEnabled ? '0' : '1'
     }
     updateSettings()
@@ -340,6 +632,12 @@ export function apply(ctx: ClientContext): void {
     id: 'dsh-turn-rail',
     order: 0,
   }, TurnRail))
+
+  ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+    name: 'conversation.session.header.utilities',
+    id: 'dsh-turn-fold-adapter',
+    order: 5,
+  }, TurnFoldAdapter))
 
   try {
     ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
