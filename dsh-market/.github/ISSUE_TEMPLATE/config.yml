@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Plugin catalog submissions / 插件收录
+    url: https://github.com/awesome-dsh-plugin/awesome-dsh-plugin
+    about: To list your plugin (or theme) in the market, PR the curated list. / 想让插件/主题出现在市场里，请向精选列表提 PR。
