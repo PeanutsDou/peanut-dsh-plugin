@@ -64,8 +64,8 @@ interface RailFrame {
   height: number
 }
 
-const RAIL_WIDTH = 8
-const RAIL_HOVER_WIDTH = 30
+const RAIL_WIDTH = 12
+const RAIL_HOVER_WIDTH = 28
 const TOP_OFFSET = 64
 
 function scrollport(): HTMLElement | null {
@@ -80,12 +80,12 @@ function ensureStyles(): void {
   style.textContent = `
 .dsh-turn-rail{position:fixed;z-index:1300;width:${RAIL_WIDTH}px;pointer-events:none;transition:width .12s ease}
 .dsh-turn-rail:hover{width:${RAIL_HOVER_WIDTH}px}
-.dsh-turn-rail-track{position:absolute;inset:0;pointer-events:auto}
-.dsh-turn-bar{position:absolute;left:0;right:0;min-height:3px;border:0;border-radius:999px;padding:0;background:var(--dsw-alias-label-dimmed);cursor:pointer;opacity:.65;transition:opacity .12s,background .12s,transform .12s}
-.dsh-turn-bar:hover,.dsh-turn-bar.active{opacity:1;background:var(--dsw-alias-state-business-primary);transform:translateY(-50%) scaleY(1.6)}
-.dsh-turn-bar.running{background:var(--dsw-alias-state-business-primary);animation:dsh-turn-bar-pulse 1.2s ease-in-out infinite}
-@keyframes dsh-turn-bar-pulse{0%,100%{opacity:1}50%{opacity:.35}}
-.dsh-turn-rail-tip{position:absolute;left:${RAIL_HOVER_WIDTH + 6}px;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;white-space:nowrap;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.2);transform:translateY(-50%)}
+.dsh-turn-rail-track{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:space-between;padding:6px 0;pointer-events:auto}
+.dsh-turn-bar{position:relative;flex:0 0 2px;width:100%;height:2px;border:0;border-radius:0;padding:0;background:var(--dsw-alias-label-caption);cursor:pointer;opacity:.55;transition:opacity .12s,background .12s}
+.dsh-turn-bar:hover,.dsh-turn-bar.active{opacity:1;background:var(--dsw-alias-label-primary)}
+.dsh-turn-bar.running{animation:dsh-turn-bar-pulse 1.2s ease-in-out infinite}
+@keyframes dsh-turn-bar-pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.dsh-turn-rail-tip{position:absolute;left:calc(100% + 8px);top:50%;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;white-space:nowrap;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.2);transform:translateY(-50%);z-index:2}
 .dsh-turn-ui-card{list-style:none;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}
 .dsh-turn-ui-card-header{width:100%;appearance:none;border:0;background:none;font:inherit;color:inherit;text-align:left;cursor:pointer;padding:14px 16px}
 .dsh-turn-ui-card-header span{display:block;font-size:15px;font-weight:600}
@@ -179,34 +179,30 @@ function TurnRail({ useSession, sessionId }: RailProps) {
     port.scrollTop = ratio * Math.max(0, port.scrollHeight - port.clientHeight)
   }
 
-  const count = turnOrder.length
-  const barHeight = Math.max(3, Math.min(14, Math.floor(140 / count)))
-
   return createPortal(
     <div className="dsh-turn-rail" style={{ left: frame.left, top: frame.top, height: frame.height }} aria-hidden="false">
       <div className="dsh-turn-rail-track">
-        {turnOrder.map((turn, index) => {
+        {turnOrder.map(turn => {
           const running = timeline.turns.get(turn)?.status === 'open'
-          const top = count > 1 ? `${(index / (count - 1)) * 100}%` : '50%'
           return (
             <button
               key={turn}
               type="button"
               className={`dsh-turn-bar${turn === activeTurn ? ' active' : ''}${running ? ' running' : ''}`}
-              style={{ top, height: `${barHeight}px`, transform: 'translateY(-50%)' }}
               aria-label={`跳转到第 ${turn + 1} 轮`}
               onClick={() => { jumpTo(turn) }}
               onMouseEnter={() => { setHoverTurn(turn) }}
               onMouseLeave={() => { setHoverTurn(null) }}
-            />
+            >
+              {hoverTurn === turn ? (
+                <span className="dsh-turn-rail-tip">
+                  第 {turn + 1} 轮
+                  {running ? ' · 运行中' : ''}
+                </span>
+              ) : null}
+            </button>
           )
         })}
-        {hoverTurn !== null ? (
-          <div className="dsh-turn-rail-tip" style={{ top: count > 1 ? `${(turnOrder.indexOf(hoverTurn) / (count - 1)) * 100}%` : '50%' }}>
-            第 {hoverTurn + 1} 轮
-            {timeline.turns.get(hoverTurn)?.status === 'open' ? ' · 运行中' : ''}
-          </div>
-        ) : null}
       </div>
     </div>,
     document.body,

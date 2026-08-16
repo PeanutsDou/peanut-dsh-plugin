@@ -51,7 +51,7 @@ function buildTurnFoldRows(order, nodeStore, timeline) {
   }
 
   const foldDisabled = typeof document !== "undefined" && document.documentElement.dataset.turnFoldDisabled === "1"
-  if (foldDisabled) {
+  const plainRows = () => {
     const rows = []
     let currentTurn = null
     for (const entry of entries) {
@@ -63,6 +63,7 @@ function buildTurnFoldRows(order, nodeStore, timeline) {
     }
     return rows
   }
+  if (foldDisabled) return plainRows()
 
   const closingSeqByTurn = new Map()
   for (const entry of entries) {
@@ -83,51 +84,60 @@ function buildTurnFoldRows(order, nodeStore, timeline) {
   }
 
   const processKinds = new Set(["assistant-step", "tool-call", "model-retry", "manual-compaction"])
+  const processKeys = []
+  const processSet = new Set()
+  for (const entry of entries) {
+    const node = entry.node
+    const isFinal = entry.turn !== null && entry.key === finalKeyByTurn.get(entry.turn)
+    if (entry.turn !== null && processKinds.has(node.kind) && !isFinal) {
+      processKeys.push(entry.key)
+      processSet.add(entry.key)
+    }
+  }
+  if (processKeys.length === 0) return plainRows()
+
+  const toolCount = processKeys.filter(key => nodeStore.get(key)?.kind === "tool-call").length
+  const interrupted = processKeys.some(key => {
+    const node = nodeStore.get(key)
+    return node !== void 0 && node.kind === "assistant-step" && node.data && node.data.status === "interrupted"
+  })
+  let taskStart = null
+  let taskEnd = null
+  for (const key of processKeys) {
+    const node = nodeStore.get(key)
+    if (node === void 0) continue
+    const turn = turnFoldTurnOf(node)
+    if (turn === null) continue
+    const info = timeline.turns.get(turn)
+    if (info === void 0) continue
+    if (info.start && (taskStart === null || info.start.time < taskStart)) taskStart = info.start.time
+    if (info.end && (taskEnd === null || info.end.time > taskEnd)) taskEnd = info.end.time
+  }
+  const durationMs = taskStart !== null && taskEnd !== null ? Math.max(0, taskEnd - taskStart) : null
+  const group = { kind: "group", turn: null, nodes: processKeys, toolCount, interrupted, durationMs }
+
   const rows = []
   let currentTurn = null
-  let group = null
-  const flushGroup = () => {
-    if (group === null) return
-    const toolCount = group.nodes.filter(item => item.node.kind === "tool-call").length
-    const interrupted = group.nodes.some(item => item.node.kind === "assistant-step" && item.node.data && item.node.data.status === "interrupted")
-    const turn = timeline.turns.get(group.turn)
-    const durationMs = turn && turn.start && turn.end ? Math.max(0, turn.end.time - turn.start.time) : null
-    rows.push({
-      kind: "group",
-      turn: group.turn,
-      nodes: group.nodes.map(item => item.key),
-      toolCount,
-      interrupted,
-      durationMs,
-    })
-    group = null
-  }
-
+  let inserted = false
   for (const entry of entries) {
     if (entry.turn !== currentTurn) {
-      flushGroup()
       currentTurn = entry.turn
       if (entry.turn !== null) rows.push({ kind: "marker", turn: entry.turn })
     }
-    const node = entry.node
-    const isFinal = entry.turn !== null && entry.key === finalKeyByTurn.get(entry.turn)
-    const isProcess = entry.turn !== null && processKinds.has(node.kind) && !isFinal
-    if (isProcess) {
-      if (group === null || group.turn !== entry.turn) {
-        flushGroup()
-        group = { turn: entry.turn, nodes: [] }
+    if (processSet.has(entry.key)) {
+      if (!inserted) {
+        rows.push(group)
+        inserted = true
       }
-      group.nodes.push(entry)
-    } else {
-      flushGroup()
-      rows.push({ kind: "node", key: entry.key })
+      continue
     }
+    rows.push({ kind: "node", key: entry.key })
   }
-  flushGroup()
+  if (!inserted) rows.splice(0, 0, group)
   return rows
 }
 
-function TurnFold({ turn, running, interrupted, toolCount, durationMs, t, children }) {
+function TurnFold({ running, interrupted, toolCount, durationMs, t, children }) {
   const [expanded, setExpanded] = react.useState(running)
   react.useEffect(() => {
     setExpanded(running)
@@ -139,10 +149,8 @@ function TurnFold({ turn, running, interrupted, toolCount, durationMs, t, childr
   const label = running ? "任务进行中" : interrupted ? "任务已中断" : "任务过程"
   return react.createElement("div", {
     className: "dsh-turn-fold" + (running ? " running" : "") + (interrupted ? " interrupted" : "") + (expanded ? " expanded" : ""),
-    "data-turn-fold": String(turn),
-    "data-turn-start": String(turn),
-    "data-turn-anchor": "",
-    "data-chat-anchor-key": "turn-fold-" + turn
+    "data-task-process": "",
+    "data-chat-anchor-key": "task-process"
   }, react.createElement("button", {
     type: "button",
     className: "dsh-turn-fold-header",
@@ -353,7 +361,6 @@ function ChatView({ useSession, useSessions, useStore, renderSlot, sessionId, op
               }, "turn-marker-" + row.turn)
             }
             if (row.kind === "group") {
-              const turn = timeline.turns.get(row.turn)
               const children = row.nodes.map((nodeKey) => (0, react_jsx_runtime.jsx)(ChatNodeSeat, {
                 nodeKey,
                 useSession,
@@ -368,14 +375,13 @@ function ChatView({ useSession, useSessions, useStore, renderSlot, sessionId, op
                 t
               }, nodeKey))
               return (0, react_jsx_runtime.jsx)(TurnFold, {
-                turn: row.turn,
-                running: turn !== void 0 && turn.status === "open",
+                running,
                 interrupted: row.interrupted,
                 toolCount: row.toolCount,
                 durationMs: row.durationMs,
                 t,
                 children
-              }, "turn-fold-" + row.turn)
+              }, "task-process")
             }
             return (0, react_jsx_runtime.jsx)(ChatNodeSeat, {
               nodeKey: row.key,
@@ -418,7 +424,7 @@ function ChatView({ useSession, useSessions, useStore, renderSlot, sessionId, op
   })
 }`
 
-const marker = 'data-turn-fold": String(turn)'
+const marker = '"data-task-process": ""'
 
 const force = process.argv.includes('--force')
 const file = path.resolve(target)
@@ -427,7 +433,7 @@ if (!fs.existsSync(file)) {
   process.exit(2)
 }
 let source = fs.readFileSync(file, 'utf8')
-if (source.includes('"data-turn-fold": String(turn)') && !force) {
+if (source.includes('"data-task-process": ""') && !force) {
   console.log('[turn-fold] already patched, nothing to do (use --force to re-apply)')
   process.exit(0)
 }
