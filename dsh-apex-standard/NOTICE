@@ -7,10 +7,14 @@ apex-standard is derived from the following MIT-licensed projects:
    https://github.com/xiaobright/dsh-anchored-standard
    - preset/agent.cordis.yml: forked (bootstrap row replaced by
      apex-bootstrap; tool-result pruner thresholds raised; comments adapted)
-   - preset/compaction-epoch.mjs, custom-bash.mjs, dev-tool-search.mjs,
-     skill-search.mjs, instruction-hint.mjs: retained verbatim
+   - preset/compaction-epoch.mjs: retained from upstream, extended with
+     guardian-retry boundary and fresh/controlled phase modes
+   - preset/custom-bash.mjs, dev-tool-search.mjs, skill-search.mjs,
+     instruction-hint.mjs: retained from upstream (instruction-hint now
+     recognizes the guardian retry boundary)
    - preset/apex-bootstrap.mjs: forked from preset/tool-bootstrap.mjs
-     (model-aware Pro/Flash branching; rc.6-safe promotion tracker)
+     (model-aware Pro/Flash branching; rc.6-safe promotion tracker;
+     plugin-name context suppression and guardian retry boundary)
 
 2. SheberDavid/v4-flash-godmode-opencode-go (MIT)
    https://github.com/SheberDavid/v4-flash-godmode-opencode-go
@@ -27,6 +31,9 @@ apex-standard is derived from the following MIT-licensed projects:
    - The persona row and persistent-shell/bootstrap-filesystem groups are
      byte-identical to the official Minimal preset, per its documented
      "exact RL prompt and schemas" semantics.
+
+preset/anchor-guardian.mjs and preset/guardian-boundary.mjs are new files
+authored for this fork.
 
 Original copyright and MIT license texts of the respective upstream
 projects apply to the derived portions.

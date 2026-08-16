@@ -52,7 +52,7 @@
   config:
     bootstrapTools: [bash, str_replace_editor]
     promoteOn: either
-    suppressedContextSources: [agent-instructions, skill-catalog]
+    suppressedContextSources: [agent-instructions, skill-catalog, time-context]
     # Post-compaction core work set. Deliberately SMALL (v1.1.0): the local
     # trigger experiments measured `let me` resurfacing at +4 extra tools and
     # fully waking at +8 — and compaction only ever happens in LONG sessions,
@@ -70,6 +70,23 @@
     # proDisciplineHint: false   # opt-in: one post-promotion long-task
     #                            # discipline hint on the Pro path (runaway
     #                            # mitigation; persona-safe by construction)
+
+# ── anchor release gate ─────────────────────────────────────────────────────
+
+# anchor-guardian detects the FIRST reasoning block of each anchor attempt.
+# A shallow first response aborts the turn before tool execution, the failed
+# surface is replaced by one fresh retry node, and a follow-up turn retries
+# with the SAME strict bootstrap catalog (apex-bootstrap recognizes the
+# retry boundary through guardian-boundary.mjs). maxAttempts is a hard
+# fail-open ceiling; the session is never left looping.
+- id: anchor-guardian
+  name: ./anchor-guardian.mjs
+  config:
+    enabled: true
+    maxAttempts: 3
+    earlyAbort: true
+    wakeMode: followup
+    retryOnCompaction: true
 
 # ── identity ────────────────────────────────────────────────────────────────
 
