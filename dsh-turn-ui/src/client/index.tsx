@@ -72,6 +72,10 @@ function scrollport(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[data-conversation-scroll]')
 }
 
+function chatFlow(port: HTMLElement | null): HTMLElement | null {
+  return port?.querySelector<HTMLElement>('[data-chat-flow]') ?? null
+}
+
 function ensureStyles(): void {
   const id = 'dsh-turn-rail-styles'
   if (document.getElementById(id) !== null) return
@@ -292,8 +296,15 @@ function updateFoldButton(
 
 function applyFold(chat: unknown, sessionId: string, enabled: boolean): void {
   const port = scrollport()
-  const flow = port?.querySelector<HTMLElement>('[data-chat-flow]')
-  if (port === null || flow == null) return
+  const flow = chatFlow(port)
+  if (port === null || flow === null) {
+    // Non-chat conversation view (trajectory, schedule, …): the native flow
+    // is unmounted but our absolutely-positioned fold headers live directly in
+    // the scrollport and would otherwise survive the tab switch as stale UI.
+    restoreFoldRows()
+    clearFoldOverlays(sessionId)
+    return
+  }
   if (!enabled) {
     restoreFoldRows()
     clearFoldOverlays(sessionId)
@@ -488,9 +499,13 @@ function TurnRail({ useSession, sessionId }: RailProps) {
 
   useEffect(() => {
     ensureStyles()
+    let observer: MutationObserver | undefined
+    let observedPort: HTMLElement | null = null
+    let frame = 0
     const updateFrame = () => {
       const port = scrollport()
-      if (port === null) {
+      if (port === null || chatFlow(port) === null) {
+        // The rail is chat-only: keep it off trajectory/schedule/… views.
         setFrame(null)
         return
       }
@@ -504,15 +519,41 @@ function TurnRail({ useSession, sessionId }: RailProps) {
         return next
       })
     }
+    const schedule = (): void => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(updateFrame)
+    }
+    const attach = (port: HTMLElement): void => {
+      if (observedPort === port) return
+      observer?.disconnect()
+      observedPort = port
+      observer = new MutationObserver(schedule)
+      // Detect view-tab swaps immediately: `[data-chat-flow]` is unmounted
+      // when conversation.view switches away from chat.
+      observer.observe(port, { childList: true, subtree: true })
+    }
     updateFrame()
     const port = scrollport()
-    port?.addEventListener('scroll', updateFrame, { passive: true })
+    if (port !== null) {
+      port.addEventListener('scroll', updateFrame, { passive: true })
+      attach(port)
+    }
     window.addEventListener('resize', updateFrame)
-    const interval = setInterval(updateFrame, 500)
+    const interval = setInterval(() => {
+      const currentPort = scrollport()
+      if (currentPort === null) {
+        setFrame(null)
+        return
+      }
+      attach(currentPort)
+      updateFrame()
+    }, 500)
     return () => {
+      cancelAnimationFrame(frame)
       port?.removeEventListener('scroll', updateFrame)
       window.removeEventListener('resize', updateFrame)
       clearInterval(interval)
+      observer?.disconnect()
     }
   }, [sessionId])
 
