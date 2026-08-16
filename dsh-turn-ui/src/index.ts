@@ -6,17 +6,14 @@ export const name = 'dsh-turn-ui'
 export const inject = ['settings']
 
 export interface TurnUiConfig {
-  foldTurns: boolean
   turnRailEnabled: boolean
 }
 
 export const ConfigSchema: z<TurnUiConfig> = z.object({
-  foldTurns: z.boolean().default(true),
   turnRailEnabled: z.boolean().default(true),
 })
 
 export const DEFAULT_CONFIG: TurnUiConfig = {
-  foldTurns: true,
   turnRailEnabled: true,
 }
 

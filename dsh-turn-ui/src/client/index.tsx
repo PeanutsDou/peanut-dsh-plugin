@@ -21,7 +21,6 @@ export const inject = ['slots', 'settingsScope']
 type RailProps = PropsRuntime<'conversation.session.header.utilities'>
 
 interface TurnUiClientSettings {
-  foldTurns: boolean
   turnRailEnabled: boolean
 }
 
@@ -34,7 +33,7 @@ interface ClientSettingsStore {
 }
 
 const clientSettingsStore: ClientSettingsStore = {
-  current: { foldTurns: true, turnRailEnabled: true },
+  current: { turnRailEnabled: true },
   listeners: new Set<() => void>(),
   getSnapshot(): TurnUiClientSettings {
     return this.current
@@ -44,7 +43,7 @@ const clientSettingsStore: ClientSettingsStore = {
     return () => { this.listeners.delete(listener) }
   },
   set(next: TurnUiClientSettings): void {
-    if (next.foldTurns === this.current.foldTurns && next.turnRailEnabled === this.current.turnRailEnabled) return
+    if (next.turnRailEnabled === this.current.turnRailEnabled) return
     this.current = next
     for (const listener of this.listeners) listener()
   },
@@ -64,8 +63,8 @@ interface RailFrame {
   height: number
 }
 
-const RAIL_WIDTH = 12
-const RAIL_HOVER_WIDTH = 28
+const RAIL_WIDTH = 8
+const RAIL_HOVER_WIDTH = 20
 const TOP_OFFSET = 64
 
 function scrollport(): HTMLElement | null {
@@ -78,9 +77,9 @@ function ensureStyles(): void {
   const style = document.createElement('style')
   style.id = id
   style.textContent = `
-.dsh-turn-rail{position:fixed;z-index:1300;width:${RAIL_WIDTH}px;pointer-events:none;transition:width .12s ease}
-.dsh-turn-rail:hover{width:${RAIL_HOVER_WIDTH}px}
-.dsh-turn-rail-track{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:space-between;padding:6px 0;pointer-events:auto}
+.dsh-turn-rail{position:fixed;z-index:1300;width:8px;pointer-events:none;transition:width .12s ease}
+.dsh-turn-rail:hover{width:20px}
+.dsh-turn-rail-track{position:absolute;inset:0;display:flex;flex-direction:column;align-items:flex-start;gap:7px;padding:8px 0;pointer-events:auto}
 .dsh-turn-bar{position:relative;flex:0 0 2px;width:100%;height:2px;border:0;border-radius:0;padding:0;background:var(--dsw-alias-label-caption);cursor:pointer;opacity:.55;transition:opacity .12s,background .12s}
 .dsh-turn-bar:hover,.dsh-turn-bar.active{opacity:1;background:var(--dsw-alias-label-primary)}
 .dsh-turn-bar.running{animation:dsh-turn-bar-pulse 1.2s ease-in-out infinite}
@@ -137,19 +136,29 @@ function TurnRail({ useSession, sessionId }: RailProps) {
   }, [sessionId])
 
   useEffect(() => {
+    let frame = 0
     const updateActive = () => {
-      const port = scrollport()
-      if (port === null) return
-      const portRect = port.getBoundingClientRect()
-      let current = turnOrder[0] ?? null
-      for (const turn of turnOrder) {
-        const anchor = port.querySelector<HTMLElement>(`[data-turn-start="${turn}"]`)
-        if (anchor === null) continue
-        const top = anchor.getBoundingClientRect().top - portRect.top
-        if (top <= TOP_OFFSET) current = turn
-        else break
-      }
-      setActiveTurn(current)
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        const port = scrollport()
+        if (port === null) return
+        const portRect = port.getBoundingClientRect()
+        let current = turnOrder[0] ?? null
+        for (const turn of turnOrder) {
+          const anchor = port.querySelector<HTMLElement>(`[data-turn-start="${turn}"]`)
+            ?? port.querySelector<HTMLElement>(`[data-turn-tail="${turn}"]`)
+          if (anchor === null) continue
+          const flowTop = anchor.getBoundingClientRect().top - portRect.top + port.scrollTop
+          if (flowTop <= port.scrollTop + TOP_OFFSET) current = turn
+          else break
+        }
+        // The running turn has no turn-tail yet: while the reader is pinned at
+        // the bottom, treat the newest turn as the visible one.
+        if (port.scrollTop + port.clientHeight >= port.scrollHeight - 24) {
+          current = turnOrder[turnOrder.length - 1] ?? current
+        }
+        setActiveTurn(current)
+      })
     }
     updateActive()
     const port = scrollport()
@@ -157,6 +166,7 @@ function TurnRail({ useSession, sessionId }: RailProps) {
     const observer = typeof MutationObserver === 'undefined' ? undefined : new MutationObserver(updateActive)
     if (port !== null) observer?.observe(port, { childList: true, subtree: true })
     return () => {
+      cancelAnimationFrame(frame)
       port?.removeEventListener('scroll', updateActive)
       observer?.disconnect()
     }
@@ -218,17 +228,13 @@ function TurnUiSettingsCard(props: {
   return (
     <li className="dsh-turn-ui-card">
       <button type="button" className="dsh-turn-ui-card-header" aria-expanded={open} onClick={() => { setOpen(!open) }}>
-        <span>轮次 UI（过程折叠 / 导航条）</span>
+        <span>轮次导航条</span>
         <div style={{ marginTop: 4, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>
-          折叠工具过程输出，并在聊天区左侧显示轮次导航短横杠
+          在聊天区左侧显示可点击跳转的轮次短横杠
         </div>
       </button>
       {open ? (
         <div className="dsh-turn-ui-card-body">
-          <label className="dsh-turn-ui-toggle">
-            <input type="checkbox" checked={settings.foldTurns} onChange={event => { props.set('foldTurns', event.currentTarget.checked) }} />
-            折叠每一轮的过程输出与工具调用
-          </label>
           <label className="dsh-turn-ui-toggle">
             <input type="checkbox" checked={settings.turnRailEnabled} onChange={event => { props.set('turnRailEnabled', event.currentTarget.checked) }} />
             显示左侧轮次导航条
@@ -247,11 +253,9 @@ export function apply(ctx: ClientContext): void {
       const snap = settingsScope!.getSnapshot()
       const value = (snap.value ?? {}) as Record<string, unknown>
       const next: TurnUiClientSettings = {
-        foldTurns: value.foldTurns !== false,
         turnRailEnabled: value.turnRailEnabled !== false,
       }
       clientSettingsStore.set(next)
-      document.documentElement.dataset.turnFoldDisabled = next.foldTurns ? '0' : '1'
       document.documentElement.dataset.turnRailDisabled = next.turnRailEnabled ? '0' : '1'
     }
     updateSettings()

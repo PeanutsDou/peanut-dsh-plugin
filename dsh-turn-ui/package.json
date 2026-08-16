@@ -37,14 +37,12 @@
     "lib/types/**/*.d.ts",
     "cordis.patch.yml",
     "src",
-    "scripts",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.json && tsdown",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "apply-core-patch": "node scripts/apply-core-patch.mjs"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {},
   "peerDependencies": {
