@@ -124,10 +124,18 @@ export function apply(ctx, config) {
   const stateFor = (session) => {
     let state = stateBySession.get(session)
     if (state === undefined) {
+      // Seed history (resume/fork) is NOT re-gated: apex-bootstrap already
+      // reads its own promotion state from the whole log, so retrying a
+      // resumed session would waste turns on a full catalog. Only live
+      // events after `firstLiveSeq` are folded; a later compaction can
+      // re-arm the gate through the normal reset.
+      const firstLiveSeq = typeof session.firstLiveSeq === 'number' && session.firstLiveSeq >= 0
+        ? session.firstLiveSeq
+        : 0
       state = {
-        scanned: 0,
+        scanned: firstLiveSeq,
         attempts: 0, // retry boundaries already recorded for the current epoch
-        released: false,
+        released: firstLiveSeq > 0,
         attemptTurn: 0,
         retriedForTurn: 0,
         pendingAbort: false,
