@@ -191,12 +191,14 @@ function buildFoldGroups(chat: unknown): FoldGroup[] {
     }
   }
 
-  const processKinds = new Set(['context', 'assistant-step', 'tool-call', 'model-retry', 'manual-compaction'])
+  const keepOutside = new Set(['user', 'steering', 'command', 'turn-tail'])
   const groups: FoldGroup[] = []
   for (const [turn, keys] of keysByTurn) {
     const processKeys = keys.filter(key => {
       const node = nodes.get(key)
-      return node !== undefined && processKinds.has((node as { kind?: string }).kind ?? '') && key !== finalKeyByTurn.get(turn)
+      if (node === undefined || key === finalKeyByTurn.get(turn)) return false
+      const kind = (node as { kind?: string }).kind ?? ''
+      return !keepOutside.has(kind)
     })
     if (processKeys.length === 0) continue
     const toolCount = processKeys.filter(key => (nodes.get(key) as { kind?: string } | undefined)?.kind === 'tool-call').length
@@ -316,6 +318,20 @@ function applyFold(chat: unknown, sessionId: string, enabled: boolean): void {
     rows.forEach(row => currentRows.add(row))
     const key = stateKey(sessionId, group.turn)
     const expanded = foldExpandedBySession.get(key) ?? group.running
+
+    // Never restyle a running turn: streaming and React both mutate these rows
+    // at high frequency, which is the source of the thinking flicker. Leave
+    // the native flow untouched until the turn closes.
+    if (group.running) {
+      rows.forEach(row => {
+        const original = foldOriginalStyles.get(row)
+        if (original === undefined) row.removeAttribute('style')
+        else if (row.style.cssText !== original) row.style.cssText = original
+        foldStyledRows.delete(row)
+      })
+      port.querySelector(`.dsh-turn-fold-overlay[data-session-id="${sessionId}"][data-turn="${group.turn}"]`)?.remove()
+      continue
+    }
 
     rows.forEach((row, index) => {
       if (!expanded) {
