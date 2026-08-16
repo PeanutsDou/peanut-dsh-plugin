@@ -293,6 +293,24 @@ function restartInProgress() {
   } catch { return false }
 }
 
+function cmdQuote(v) {
+  const s = String(v)
+  return /[\s"]/.test(s) ? '"' + s.replace(/"/g, '\\"') + '"' : s
+}
+
+function vbsQuote(s) {
+  return String(s).replace(/"/g, '""')
+}
+
+function writeLaunchVbs(exe, out, err, cwd, argv) {
+  const command = [exe].concat(argv).map(cmdQuote).join(' ')
+  const cmdline = 'cmd /c "' + command + ' > ' + cmdQuote(out) + ' 2>&1"'
+  const body = 'Dim sh\r\nSet sh = CreateObject("WScript.Shell")\r\nsh.CurrentDirectory = "' + vbsQuote(cwd) + '"\r\nsh.Run "' + vbsQuote(cmdline) + '", 0, False\r\n'
+  const file = path.join(os.tmpdir(), 'dsh-watchdog-' + Date.now() + '-' + process.pid + '.vbs')
+  fs.writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(body, 'utf16le')]))
+  return file
+}
+
 function relaunch() {
   const idx = readIndex()
   if (!idx || !idx.execPath) { log('relaunch: no usable index'); return }
@@ -301,13 +319,13 @@ function relaunch() {
   const out = path.join(os.tmpdir(), 'dsh-watchdog-' + stamp + '.out.log')
   const err = path.join(os.tmpdir(), 'dsh-watchdog-' + stamp + '.err.log')
   try {
-    const o = fs.openSync(out, 'a')
-    const e = fs.openSync(err, 'a')
     const argv = [].concat(idx.execArgv || [], idx.argv || [])
-    const child = spawn(idx.execPath, argv, { cwd: idx.cwd, detached: true, stdio: ['ignore', o, e], env: process.env })
+    const vbs = writeLaunchVbs(idx.execPath, out, err, idx.cwd || process.cwd(), argv)
+    const wscript = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wscript.exe')
+    const child = spawn(wscript, ['//B', '//NoLogo', vbs], { detached: true, stdio: 'ignore', windowsHide: true })
     child.once('error', function (er) { log('relaunch spawn error: ' + String(er)) })
     child.unref()
-    log('relaunch: spawned pid ' + child.pid + ' cwd=' + idx.cwd)
+    log('relaunch: hidden-console launch scheduled (vbs=' + vbs + ') cwd=' + idx.cwd)
   } catch (er) {
     log('relaunch failed: ' + String(er))
   }
@@ -481,6 +499,19 @@ function waitPortDown(port, timeoutMs, cb) {
   poll()
 }
 
+function vbsQuote(s) {
+  return String(s).replace(/"/g, '""')
+}
+
+function writeLaunchVbs(exe, outLog, errLog, cwd, argv) {
+  const command = [exe].concat(argv).map(quoteArg).join(' ')
+  const cmdline = 'cmd /c "' + command + ' > ' + quoteArg(outLog) + ' 2>&1"'
+  const body = 'Dim sh\r\nSet sh = CreateObject("WScript.Shell")\r\nsh.CurrentDirectory = "' + vbsQuote(cwd) + '"\r\nsh.Run "' + vbsQuote(cmdline) + '", 0, False\r\n'
+  const file = path.join(os.tmpdir(), 'dsh-offline-' + Date.now() + '-' + process.pid + '.vbs')
+  fs.writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(body, 'utf16le')]))
+  return file
+}
+
 function spawnDsh(attempt, cb) {
   const maxAttempts = 5
   if (attempt > maxAttempts) {
@@ -491,41 +522,33 @@ function spawnDsh(attempt, cb) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
   const outLog = path.join(os.tmpdir(), 'dsh-offline-' + stamp + '.out.log')
   const errLog = path.join(os.tmpdir(), 'dsh-offline-' + stamp + '.err.log')
-  let out, err, child
-  try {
-    out = fs.openSync(outLog, 'a')
-    err = fs.openSync(errLog, 'a')
-    const argv = [].concat(idx.execArgv || [], idx.argv || [])
-    child = spawn(idx.execPath, argv, { cwd: idx.cwd || process.cwd(), detached: true, stdio: ['ignore', out, err], env: process.env, windowsHide: true })
-  } catch (e) {
-    log('relaunch spawn threw: ' + String(e))
-    try { if (out) fs.closeSync(out) } catch {}
-    try { if (err) fs.closeSync(err) } catch {}
-    setTimeout(function () { spawnDsh(attempt + 1, cb) }, 1200)
-    return
-  }
-  let settled = false
-  function retry(reason) {
-    if (settled) return
-    settled = true
-    try { fs.closeSync(out) } catch {}
-    try { fs.closeSync(err) } catch {}
+  const retry = function (reason) {
     log(reason + '; retrying relaunch')
     setTimeout(function () { spawnDsh(attempt + 1, cb) }, 1200)
   }
-  child.once('error', function (e) { retry('relaunch spawn error: ' + String(e)) })
-  child.once('exit', function (code, signal) {
-    retry('relaunched process exited early (code=' + String(code) + ' signal=' + String(signal) + ')')
-  })
-  setTimeout(function () {
-    if (settled) return
-    settled = true
-    try { fs.closeSync(out) } catch {}
-    try { fs.closeSync(err) } catch {}
-    log('relaunched pid ' + child.pid + ' and alive after grace period')
+  try {
+    const argv = [].concat(idx.execArgv || [], idx.argv || [])
+    const vbs = writeLaunchVbs(idx.execPath, outLog, errLog, idx.cwd || process.cwd(), argv)
+    const wscript = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wscript.exe')
+    const child = spawn(wscript, ['//B', '//NoLogo', vbs], { detached: true, stdio: 'ignore', windowsHide: true })
+    child.once('error', function (e) { retry('relaunch wscript error: ' + String(e)) })
     child.unref()
-    cb(true)
-  }, 3000)
+    const start = Date.now()
+    function poll() {
+      portUp(function (up) {
+        if (up) {
+          log('relaunched: port ' + port + ' up after ' + (Date.now() - start) + 'ms')
+          cb(true)
+          return
+        }
+        if (Date.now() - start > 30000) { retry('relaunch port ' + port + ' did not come up within 30s'); return }
+        setTimeout(poll, 500)
+      })
+    }
+    setTimeout(poll, 1500)
+  } catch (e) {
+    retry('relaunch spawn threw: ' + String(e))
+  }
 }
 
 function quoteArg(v) {
@@ -767,6 +790,8 @@ export function buildRestartHelperScript(
     "const { spawn } = require('node:child_process')",
     "const fs = require('node:fs')",
     "const net = require('node:net')",
+    "const path = require('node:path')",
+    "const os = require('node:os')",
     `const argv = ${JSON.stringify(argv)}`,
     `const cwd = ${JSON.stringify(cwd)}`,
     `const logOut = ${JSON.stringify(logOut)}`,
@@ -805,48 +830,62 @@ export function buildRestartHelperScript(
     "  poll()",
     "}",
     "let attempts = 0",
+    "function clearFlag() { try { fs.rmSync(restartingFlag, { force: true }) } catch {} }",
+    "function cmdQuote(v) {",
+    "  const s = String(v)",
+    "  return /[\\s\"]/.test(s) ? '\"' + s.replace(/\"/g, '\\\\\"') + '\"' : s",
+    "}",
+    "function vbsQuote(s) { return String(s).replace(/\"/g, '\"\"') }",
+    "function writeLaunchVbs() {",
+    "  const command = [process.execPath].concat(argv).map(cmdQuote).join(' ')",
+    "  const cmdline = 'cmd /c \"' + command + ' > ' + cmdQuote(logOut) + ' 2>&1\"'",
+    "  const body = 'Dim sh\\r\\nSet sh = CreateObject(\"WScript.Shell\")\\r\\nsh.CurrentDirectory = \"' + vbsQuote(cwd) + '\"\\r\\nsh.Run \"' + vbsQuote(cmdline) + '\", 0, False\\r\\n'",
+    "  const file = path.join(os.tmpdir(), 'dsh-restart-relaunch-' + Date.now() + '-' + process.pid + '.vbs')",
+    "  fs.writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(body, 'utf16le')]))",
+    "  return file",
+    "}",
+    "const wscript = path.join(process.env.SystemRoot || 'C:\\\\Windows', 'System32', 'wscript.exe')",
     "function spawnNew() {",
     "  attempts += 1",
     "  if (attempts > retryAttempts) {",
-    "    log('giving up after ' + (attempts - 1) + ' spawn attempts; clearing restarting flag')",
-    "    try { fs.rmSync(restartingFlag, { force: true }) } catch {}",
+    "    log('giving up after ' + (attempts - 1) + ' spawn attempts')",
+    "    clearFlag()",
     "    return",
     "  }",
-    "  log('spawn attempt ' + attempts)",
-    "  let out, err, child",
-    "  try {",
-    "    out = fs.openSync(logOut, 'a')",
-    "    err = fs.openSync(logErr, 'a')",
-    "    child = spawn(process.execPath, argv, { cwd: cwd, detached: true, stdio: ['ignore', out, err], env: process.env, windowsHide: true })",
-    "  } catch (e) {",
-    "    log('spawn threw: ' + String(e))",
-    "    try { if (out) fs.closeSync(out) } catch {}",
-    "    try { if (err) fs.closeSync(err) } catch {}",
-    "    setTimeout(spawnNew, retryDelayMs)",
-    "    return",
-    "  }",
-    "  let settled = false",
+    "  log('spawn attempt ' + attempts + ' (hidden console)')",
+    "  let done = false",
     "  function retry(reason) {",
-    "    if (settled) return",
-    "    settled = true",
-    "    try { fs.closeSync(out) } catch {}",
-    "    try { fs.closeSync(err) } catch {}",
+    "    if (done) return",
+    "    done = true",
     "    log(reason + '; retrying in ' + retryDelayMs + 'ms')",
     "    setTimeout(spawnNew, retryDelayMs)",
     "  }",
-    "  child.once('error', function (e) { retry('spawn error: ' + String(e)) })",
-    "  child.once('exit', function (code, signal) {",
-    "    retry('new process exited early (code=' + String(code) + ' signal=' + String(signal) + ')')",
-    "  })",
-    "  const grace = setTimeout(function () {",
-    "    if (settled) return",
-    "    settled = true",
-    "    try { fs.closeSync(out) } catch {}",
-    "    try { fs.closeSync(err) } catch {}",
-    "    log('new process pid ' + child.pid + ' alive after ' + graceMs + 'ms; helper done')",
-    "    child.unref()",
-    "  }, graceMs)",
-    "  grace.unref && grace.unref()",
+    "  let vbs",
+    "  try { vbs = writeLaunchVbs() } catch (e) { retry('launch write threw: ' + String(e)); return }",
+    "  const child = spawn(wscript, ['//B', '//NoLogo', vbs], { detached: true, stdio: 'ignore', windowsHide: true })",
+    "  child.once('error', function (e) { retry('wscript spawn error: ' + String(e)) })",
+    "  child.unref()",
+    "  if (!port) {",
+    "    log('no port to poll; hidden-console launch handed off')",
+    "    setTimeout(clearFlag, graceMs)",
+    "    return",
+    "  }",
+    "  const start = Date.now()",
+    "  function poll() {",
+    "    portUp(function (up) {",
+    "      if (up) {",
+    "        done = true",
+    "        let idxPid = null",
+    "        try { idxPid = JSON.parse(fs.readFileSync(path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'dsh-process.json'), 'utf8')).pid } catch {}",
+    "        log('port ' + port + ' up after ' + (Date.now() - start) + 'ms' + (idxPid === null ? '' : '; new pid ' + idxPid) + '; helper done')",
+    "        clearFlag()",
+    "        return",
+    "      }",
+    "      if (Date.now() - start > 30000) { retry('port ' + port + ' did not come up within 30s'); return }",
+    "      setTimeout(poll, 400)",
+    "    })",
+    "  }",
+    "  setTimeout(poll, 800)",
     "}",
     "log('helper start pid=' + process.pid + ' cwd=' + cwd + ' port=' + port + ' waitTimeoutMs=' + waitTimeoutMs)",
     "waitPortDown(waitTimeoutMs, function (down) {",
