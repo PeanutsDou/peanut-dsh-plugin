@@ -77,10 +77,13 @@ function ensureStyles(): void {
   const style = document.createElement('style')
   style.id = id
   style.textContent = `
-.dsh-turn-rail{position:fixed;z-index:1300;width:10px;pointer-events:none;transition:width .12s ease}
-.dsh-turn-rail:hover{width:24px}
-.dsh-turn-rail-track{position:absolute;inset:0;display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:8px 0;pointer-events:auto}
-.dsh-turn-bar{position:relative;flex:0 0 6px;width:100%;height:6px;border:0;border-radius:0;padding:0;background:var(--dsw-alias-label-caption);cursor:pointer;opacity:.55;transition:opacity .12s,background .12s}
+.dsh-turn-rail{position:fixed;z-index:1300;width:15px;pointer-events:none;transition:width .12s ease}
+.dsh-turn-rail:hover{width:28px}
+.dsh-turn-rail-track{position:absolute;inset:0;display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:8px 0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-label-caption) transparent;pointer-events:auto}
+.dsh-turn-rail-track::-webkit-scrollbar{width:4px}
+.dsh-turn-rail-track::-webkit-scrollbar-thumb{background:var(--dsw-alias-label-caption);border-radius:2px}
+.dsh-turn-rail-track::-webkit-scrollbar-track{background:transparent}
+.dsh-turn-bar{position:relative;flex:0 0 4px;width:100%;height:4px;border:0;border-radius:0;padding:0;background:var(--dsw-alias-label-caption);cursor:pointer;opacity:.55;transition:opacity .12s,background .12s}
 .dsh-turn-bar:hover,.dsh-turn-bar.active{opacity:1;background:var(--dsw-alias-label-primary)}
 .dsh-turn-bar.running{animation:dsh-turn-bar-pulse 1.2s ease-in-out infinite}
 @keyframes dsh-turn-bar-pulse{0%,100%{opacity:1}50%{opacity:.3}}
