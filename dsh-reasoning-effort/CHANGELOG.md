@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.5.2] - 2026-08-16
+
+- The whale-girl (Big Fat Fish) thumb is now enabled by default; an explicit stored `false` still turns her off.
+- Renamed the setting to 「鲸鱼娘滑块（大肥鱼）」and updated both READMEs.
+
 ## [0.5.1] - 2026-08-16
 
 PeanutsDou fork. Package renamed to `@peanutsdou/dsh-reasoning-effort`; storage keys namespaced with migration from the upstream keys.

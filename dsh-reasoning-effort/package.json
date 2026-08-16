@@ -1,6 +1,6 @@
 {
   "name": "@peanutsdou/dsh-reasoning-effort",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Codex-style DeepSeek Harness model and reasoning selector (PeanutsDou fork): model-advertised effort levels, DSH-native themes, left-clipped radiation effects, plus availability and provider-default fixes.",
   "keywords": [
     "deepseek",

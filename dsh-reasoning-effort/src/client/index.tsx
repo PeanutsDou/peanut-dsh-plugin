@@ -92,9 +92,12 @@ const enabledStore = {
 
 function readChibiThumbPreference(): boolean {
   try {
-    return readStorageValue([CHIBI_THUMB_STORAGE_KEY, LEGACY_CHIBI_THUMB_STORAGE_KEY]) === 'true'
+    const stored = readStorageValue([CHIBI_THUMB_STORAGE_KEY, LEGACY_CHIBI_THUMB_STORAGE_KEY])
+    // PeanutsDou fork: the whale-girl thumb is the default look. An explicit
+    // 'false' in either key still wins, so users who turned her off keep her off.
+    return stored === null ? true : stored === 'true'
   } catch {
-    return false
+    return true
   }
 }
 
@@ -852,15 +855,15 @@ function ChibiThumbSetting() {
   return (
     <div className="re-setting-row">
       <div className="re-setting-copy">
-        <div className="re-setting-title">大肥鱼滑块</div>
-        <div className="re-setting-description">用大肥鱼替换滑块按钮</div>
+        <div className="re-setting-title">鲸鱼娘滑块（大肥鱼）</div>
+        <div className="re-setting-description">用鲸鱼娘替换滑块按钮</div>
       </div>
       <div className="re-setting-control">
         <span className="re-setting-state">{enabled ? '启用' : '停用'}</span>
         <button
           type="button"
           role="switch"
-          aria-label="启用大肥鱼滑块"
+          aria-label="启用鲸鱼娘滑块"
           aria-checked={enabled}
           disabled={!sliderEnabled}
           className={`re-setting-switch${enabled ? ' is-on' : ''}`}

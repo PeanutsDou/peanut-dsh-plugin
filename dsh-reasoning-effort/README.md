@@ -8,7 +8,7 @@
 
 [English](README.en.md) · [上游原版](https://github.com/HanaAyane/dsh-reasoning-effort) · [本仓库](https://github.com/PeanutsDou/peanut-dsh-plugin/tree/main/dsh-reasoning-effort) · [反馈问题](https://github.com/PeanutsDou/peanut-dsh-plugin/issues)
 
-[![fork 0.5.1](https://img.shields.io/badge/fork-0.5.1-6f83ff?style=flat-square)](https://github.com/PeanutsDou/peanut-dsh-plugin/tree/main/dsh-reasoning-effort)
+[![fork 0.5.2](https://img.shields.io/badge/fork-0.5.2-6f83ff?style=flat-square)](https://github.com/PeanutsDou/peanut-dsh-plugin/tree/main/dsh-reasoning-effort)
 [![DSH 0.1.0-rc.6](https://img.shields.io/badge/DSH-0.1.0--rc.6-8b5cf6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![MIT License](https://img.shields.io/badge/license-MIT-536990?style=flat-square)](LICENSE)
 
@@ -43,7 +43,7 @@ Remove-Item "$dest\.client-build" -Recurse -Force -ErrorAction SilentlyContinue
 
 并运行 `dsh --profile web --dump-config` 确认配置里出现 `name: '@peanutsdou/dsh-reasoning-effort'`。
 
-> 插件只在 Web Host 启动时载入：部署完成后请手动重启 DSH Web Host。首次打开后可在 **设置 → 通用设置** 中切换“推理强度滑块”和“大肥鱼滑块”。
+> 插件只在 Web Host 启动时载入：部署完成后请手动重启 DSH Web Host。首次打开后可在 **设置 → 通用设置** 中切换“推理强度滑块”和“鲸鱼娘滑块（大肥鱼）”。鲸鱼娘在本 fork 中默认开启。
 
 ### 2. 重启 DSH Web Host
 
@@ -72,17 +72,17 @@ Remove-Item "$dest\.client-build" -Recurse -Force -ErrorAction SilentlyContinue
 
 DeepSeek 系模型通常公开 `off` / `high` / `max`；GLM coding 系模型（如 GLM-5.2）公开 `off` / `low` / `medium` / `high` / `xhigh` 五档。滑块只是提交当前模型公开的 effort 值，不会绕过模型或部署本身的能力限制。模型公开的档位少于两档、或没有声明任何档位时，菜单会显示"当前模型未提供推理强度档位"，此时可参考下文常见问题为模型补声明。
 
-## 启用大肥鱼滑块
+## 鲸鱼娘滑块（大肥鱼）
 
-插件首次安装后默认使用纯白按钮。若想换成八帧奔跑小人：
+本 fork 默认使用八帧奔跑的鲸鱼娘。若想换回纯白按钮：
 
 1. 打开 **设置 → 通用设置**。
-2. 找到“外观”下方的 **大肥鱼滑块**。
-3. 打开开关，再回到模型入口。
+2. 找到“外观”下方的 **鲸鱼娘滑块（大肥鱼）**。
+3. 关闭开关，再回到模型入口。
 
-<img src="assets/readme/settings.webp" alt="DeepSeek Harness 通用设置中的推理强度滑块和大肥鱼滑块开关" width="1200">
+<img src="assets/readme/settings.webp" alt="DeepSeek Harness 通用设置中的推理强度滑块和鲸鱼娘滑块开关" width="1200">
 
-大肥鱼只替换按钮外观，不改变档位吸附、键盘控制、辐射特效或模型选择。拖动时动画会自动加速；系统启用“减少动态效果”后会停留在稳定帧。
+鲸鱼娘只替换按钮外观，不改变档位吸附、键盘控制、辐射特效或模型选择。拖动时动画会自动加速；系统启用“减少动态效果”后会停留在稳定帧。
 
 同一页面中的 **推理强度滑块** 总开关可以临时关闭整个增强控件。关闭后无需卸载，DSH 原生模型选择器会立即恢复。两个开关都只保存在当前浏览器。
 

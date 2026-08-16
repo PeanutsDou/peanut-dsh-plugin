@@ -8,7 +8,7 @@
 
 [中文首页](README.md) · [Upstream](https://github.com/HanaAyane/dsh-reasoning-effort) · [This fork](https://github.com/PeanutsDou/peanut-dsh-plugin/tree/main/dsh-reasoning-effort) · [Report an issue](https://github.com/PeanutsDou/peanut-dsh-plugin/issues)
 
-[![fork 0.5.1](https://img.shields.io/badge/fork-0.5.1-6f83ff?style=flat-square)](https://github.com/PeanutsDou/peanut-dsh-plugin/tree/main/dsh-reasoning-effort)
+[![fork 0.5.2](https://img.shields.io/badge/fork-0.5.2-6f83ff?style=flat-square)](https://github.com/PeanutsDou/peanut-dsh-plugin/tree/main/dsh-reasoning-effort)
 [![DSH 0.1.0-rc.6](https://img.shields.io/badge/DSH-0.1.0--rc.6-8b5cf6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![MIT License](https://img.shields.io/badge/license-MIT-536990?style=flat-square)](LICENSE)
 
@@ -73,15 +73,15 @@ The slider renders exactly the `reasoning.efforts` the selected model exposes in
 
 DeepSeek models typically expose `off` / `high` / `max`; GLM coding models (e.g. GLM-5.2) expose five levels: `off` / `low` / `medium` / `high` / `xhigh`. The slider submits effort values exposed by the selected model; it does not bypass model or deployment limits. When a model exposes fewer than two levels, or none at all, the menu shows "current model provides no reasoning-effort levels" — see the troubleshooting section below for how to declare them.
 
-## Enable the Big Fat Fish slider
+## Whale-girl slider (Big Fat Fish)
 
-The first installation uses the plain white thumb. To switch to the eight-frame runner:
+This fork defaults to the eight-frame whale-girl runner. To switch back to the plain white thumb:
 
 1. Open **Settings → General**.
-2. Find **Big Fat Fish slider** below Appearance.
-3. Enable it and return to the model control.
+2. Find **Whale-girl slider (Big Fat Fish)** below Appearance.
+3. Turn it off and return to the model control.
 
-<img src="assets/readme/settings.webp" alt="The reasoning effort and Big Fat Fish slider switches in DeepSeek Harness General Settings" width="1200">
+<img src="assets/readme/settings.webp" alt="The reasoning effort and whale-girl slider switches in DeepSeek Harness General Settings" width="1200">
 
 The runner changes only the thumb artwork. Snapping, keyboard control, radiation effects, and model selection remain unchanged. It animates faster while dragging and freezes on a stable frame when reduced motion is enabled.
 
