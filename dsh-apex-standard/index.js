@@ -31,10 +31,12 @@ const PRESET_ID = 'apex-standard'
 const PRESET_FILES = [
   'agent.cordis.yml',
   'preset.yml',
+  'anchor-guardian.mjs',
   'apex-bootstrap.mjs',
   'compaction-epoch.mjs',
   'custom-bash.mjs',
   'dev-tool-search.mjs',
+  'guardian-boundary.mjs',
   'instruction-hint.mjs',
   'skill-search.mjs',
 ]
