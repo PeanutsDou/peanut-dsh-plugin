@@ -31,7 +31,7 @@ export interface UsageMonitorConfig {
   balanceUrl: string
   credentialRef: string
   balancePollMs: number
-  /** CNY per 1M tokens before the peak/off-peak schedule starts. */
+  /** CNY per 1M tokens before the peak/off-peak schedule starts (deepseek-v4-pro). */
   priceCacheHitPerM: number
   priceInputPerM: number
   priceOutputPerM: number
@@ -43,6 +43,16 @@ export interface UsageMonitorConfig {
   peakCacheHitPerM: number
   peakInputPerM: number
   peakOutputPerM: number
+  /** deepseek-v4-flash legacy / off-peak / peak prices (CNY per 1M tokens). */
+  flashPriceCacheHitPerM: number
+  flashPriceInputPerM: number
+  flashPriceOutputPerM: number
+  flashOffPeakCacheHitPerM: number
+  flashOffPeakInputPerM: number
+  flashOffPeakOutputPerM: number
+  flashPeakCacheHitPerM: number
+  flashPeakInputPerM: number
+  flashPeakOutputPerM: number
 }
 
 export const ConfigSchema: z<UsageMonitorConfig> = z.object({
@@ -59,6 +69,15 @@ export const ConfigSchema: z<UsageMonitorConfig> = z.object({
   peakCacheHitPerM: z.number().default(0.3),
   peakInputPerM: z.number().default(9),
   peakOutputPerM: z.number().default(27),
+  flashPriceCacheHitPerM: z.number().default(0.02),
+  flashPriceInputPerM: z.number().default(1),
+  flashPriceOutputPerM: z.number().default(2),
+  flashOffPeakCacheHitPerM: z.number().default(0.05),
+  flashOffPeakInputPerM: z.number().default(1.5),
+  flashOffPeakOutputPerM: z.number().default(4.5),
+  flashPeakCacheHitPerM: z.number().default(0.1),
+  flashPeakInputPerM: z.number().default(3),
+  flashPeakOutputPerM: z.number().default(9),
 })
 
 export const DEFAULT_CONFIG: UsageMonitorConfig = {
@@ -77,6 +96,16 @@ export const DEFAULT_CONFIG: UsageMonitorConfig = {
   peakCacheHitPerM: 0.3,
   peakInputPerM: 9,
   peakOutputPerM: 27,
+  // Official deepseek-v4-flash prices before / after 2026-08-17.
+  flashPriceCacheHitPerM: 0.02,
+  flashPriceInputPerM: 1,
+  flashPriceOutputPerM: 2,
+  flashOffPeakCacheHitPerM: 0.05,
+  flashOffPeakInputPerM: 1.5,
+  flashOffPeakOutputPerM: 4.5,
+  flashPeakCacheHitPerM: 0.1,
+  flashPeakInputPerM: 3,
+  flashPeakOutputPerM: 9,
 }
 
 /** Provider-neutral token buckets (same vocabulary as the built-in token meter). */
@@ -107,7 +136,7 @@ interface SessionRow extends CostedBuckets {
 }
 
 export interface LedgerState {
-  version: 3
+  version: 4
   allTime: CostedBuckets
   days: Record<string, CostedBuckets>
   months: Record<string, CostedBuckets>
@@ -296,6 +325,13 @@ const LEGACY_RATES: PricingRates = {
   output: DEFAULT_CONFIG.priceOutputPerM,
 }
 
+/** Which official DeepSeek V4 price table a model id belongs to. */
+export function modelRateKind(model: string): 'flash' | 'pro' {
+  const id = model.trim().toLowerCase()
+  if (id.includes('flash') || id === 'deepseek-chat') return 'flash'
+  return 'pro'
+}
+
 function beijingParts(date: Date): { dayKey: string; hour: number } {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Shanghai',
@@ -318,18 +354,29 @@ function isPeakHour(hour: number): boolean {
 
 /**
  * Effective CNY-per-1M pricing for one event:
- *  - before `priceEpoch` use the legacy prices;
- *  - after the epoch use the official Beijing peak/off-peak schedule.
+ *  - before `priceEpoch` use the model's legacy prices;
+ *  - after the epoch use the model's official Beijing peak/off-peak schedule.
+ *
+ * deepseek-v4-flash has its own (lower) official price table; the previous
+ * implementation accidentally charged it with the deepseek-v4-pro table,
+ * which is exactly 3x the flash price in every peak/off-peak slot.
  */
-export function ratesForUsage(config: UsageMonitorConfig, at: Date): PricingRates {
+export function ratesForUsage(config: UsageMonitorConfig, at: Date, model = 'deepseek-v4-pro'): PricingRates {
   const beijing = beijingParts(at)
+  const flash = modelRateKind(model) === 'flash'
   if (beijing.dayKey < config.priceEpoch) {
-    return { cacheHit: config.priceCacheHitPerM, input: config.priceInputPerM, output: config.priceOutputPerM }
+    return flash
+      ? { cacheHit: config.flashPriceCacheHitPerM, input: config.flashPriceInputPerM, output: config.flashPriceOutputPerM }
+      : { cacheHit: config.priceCacheHitPerM, input: config.priceInputPerM, output: config.priceOutputPerM }
   }
   if (isPeakHour(beijing.hour)) {
-    return { cacheHit: config.peakCacheHitPerM, input: config.peakInputPerM, output: config.peakOutputPerM }
+    return flash
+      ? { cacheHit: config.flashPeakCacheHitPerM, input: config.flashPeakInputPerM, output: config.flashPeakOutputPerM }
+      : { cacheHit: config.peakCacheHitPerM, input: config.peakInputPerM, output: config.peakOutputPerM }
   }
-  return { cacheHit: config.offPeakCacheHitPerM, input: config.offPeakInputPerM, output: config.offPeakOutputPerM }
+  return flash
+    ? { cacheHit: config.flashOffPeakCacheHitPerM, input: config.flashOffPeakInputPerM, output: config.flashOffPeakOutputPerM }
+    : { cacheHit: config.offPeakCacheHitPerM, input: config.offPeakInputPerM, output: config.offPeakOutputPerM }
 }
 
 /** Estimated spend for one usage sample. Cache-write tokens are billed as uncached input. */
@@ -343,9 +390,9 @@ export function costForBuckets(tokens: TokenBuckets, rates: PricingRates): numbe
 }
 
 /** Token + cost buckets for one usage sample at a point in time. */
-export function costedBucketsOf(usage: TokenUsageLike, at: Date, config: UsageMonitorConfig = DEFAULT_CONFIG): CostedBuckets {
+export function costedBucketsOf(usage: TokenUsageLike, at: Date, config: UsageMonitorConfig = DEFAULT_CONFIG, model = 'deepseek-v4-pro'): CostedBuckets {
   const tokens = bucketsOf(usage)
-  return { ...tokens, costCny: costForBuckets(tokens, ratesForUsage(config, at)) }
+  return { ...tokens, costCny: costForBuckets(tokens, ratesForUsage(config, at, model)) }
 }
 
 /** Signed bucket delta (tokens and cost), clamped at zero so revisions cannot erase history. */
@@ -421,7 +468,99 @@ function sanitizeBuckets(value: unknown): CostedBuckets {
   }
 }
 
-function sanitizeLedger(value: unknown): LedgerState {
+function roundCost(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000
+}
+
+/**
+ * v3 tracked per-model tokens but priced every model with the
+ * deepseek-v4-pro table. For the official default tables, flash prices are
+ * exactly one third of pro prices in every peak/off-peak slot, so a stored
+ * flash `costCny` can be corrected exactly by dividing by 3 (tokens stay the
+ * same). Custom price tables are left untouched because their peak/off-peak
+ * split is not stored per bucket.
+ */
+function migrateV3FlashPricing(ledger: LedgerState, config: UsageMonitorConfig): LedgerState {
+  const isDefaultPricing = config.priceEpoch === '2026-08-17'
+    && config.offPeakCacheHitPerM === 0.15 && config.offPeakInputPerM === 4.5 && config.offPeakOutputPerM === 13.5
+    && config.peakCacheHitPerM === 0.3 && config.peakInputPerM === 9 && config.peakOutputPerM === 27
+    && config.flashOffPeakCacheHitPerM === 0.05 && config.flashOffPeakInputPerM === 1.5 && config.flashOffPeakOutputPerM === 4.5
+    && config.flashPeakCacheHitPerM === 0.1 && config.flashPeakInputPerM === 3 && config.flashPeakOutputPerM === 9
+  if (!isDefaultPricing) return ledger
+  const hasFlashBuckets = Object.values(ledger.byModel.days).some(models =>
+    Object.keys(models).some(model => modelRateKind(model) === 'flash'),
+  )
+  if (!hasFlashBuckets) return ledger
+
+  const days = { ...ledger.days }
+  const months = { ...ledger.months }
+  const byModel = {
+    allTime: { ...ledger.byModel.allTime },
+    days: Object.fromEntries(Object.entries(ledger.byModel.days).map(([day, models]) => [day, { ...models }])),
+    months: Object.fromEntries(Object.entries(ledger.byModel.months).map(([month, models]) => [month, { ...models }])),
+  }
+
+  const reprice = (bucket: CostedBuckets): { bucket: CostedBuckets; delta: number } => {
+    const corrected = roundCost(bucket.costCny / 3)
+    return { bucket: { ...bucket, costCny: corrected }, delta: corrected - bucket.costCny }
+  }
+
+  for (const [model, bucket] of Object.entries(byModel.allTime)) {
+    if (modelRateKind(model) !== 'flash') continue
+    const { bucket: corrected } = reprice(bucket)
+    byModel.allTime[model] = corrected
+    // The all-time aggregate is recomputed from corrected day totals below,
+    // so this delta is intentionally not applied again here.
+  }
+
+  for (const [day, models] of Object.entries(byModel.days)) {
+    let dayDelta = 0
+    for (const [model, bucket] of Object.entries(models)) {
+      if (modelRateKind(model) !== 'flash') continue
+      const { bucket: corrected, delta } = reprice(bucket)
+      byModel.days[day]![model] = corrected
+      dayDelta += delta
+    }
+    if (dayDelta !== 0 && days[day] !== undefined) {
+      days[day] = { ...days[day]!, costCny: Math.max(0, roundCost(days[day]!.costCny + dayDelta)) }
+    }
+  }
+
+  for (const [month, models] of Object.entries(byModel.months)) {
+    let monthDelta = 0
+    for (const [model, bucket] of Object.entries(models)) {
+      if (modelRateKind(model) !== 'flash') continue
+      const { bucket: corrected, delta } = reprice(bucket)
+      byModel.months[month]![model] = corrected
+      monthDelta += delta
+    }
+    if (monthDelta !== 0 && months[month] !== undefined) {
+      months[month] = { ...months[month]!, costCny: Math.max(0, roundCost(months[month]!.costCny + monthDelta)) }
+    }
+  }
+
+  // Keep all-time and month aggregates consistent with the corrected days.
+  const allTimeCost = roundCost(Object.values(days).reduce((sum, bucket) => sum + bucket.costCny, 0))
+  const monthCosts = new Map<string, number>()
+  for (const [day, bucket] of Object.entries(days)) {
+    const month = day.slice(0, 7)
+    monthCosts.set(month, (monthCosts.get(month) ?? 0) + bucket.costCny)
+  }
+  for (const [month, bucket] of Object.entries(months)) {
+    const next = monthCosts.get(month)
+    if (next !== undefined) months[month] = { ...bucket, costCny: roundCost(next) }
+  }
+
+  return {
+    ...ledger,
+    allTime: { ...ledger.allTime, costCny: allTimeCost },
+    days,
+    months,
+    byModel,
+  }
+}
+
+function sanitizeLedger(value: unknown, config: UsageMonitorConfig = DEFAULT_CONFIG): LedgerState {
   const record = (value ?? {}) as Record<string, unknown>
   const days: Record<string, CostedBuckets> = {}
   const months: Record<string, CostedBuckets> = {}
@@ -457,8 +596,9 @@ function sanitizeLedger(value: unknown): LedgerState {
       byModel.months[key][model] = sanitizeBuckets(buckets)
     }
   }
-  return {
-    version: 3,
+  const sourceVersion = Number(record.version)
+  let ledger: LedgerState = {
+    version: 4,
     allTime: sanitizeBuckets(record.allTime),
     days,
     months,
@@ -466,11 +606,17 @@ function sanitizeLedger(value: unknown): LedgerState {
     lastStep,
     byModel,
   }
+  // Only v3 has the byModel buckets and the pro-priced-flash bug this
+  // migration repairs; older ledgers must keep their legacy all-time cost.
+  if (sourceVersion === 3) {
+    ledger = migrateV3FlashPricing(ledger, config)
+  }
+  return ledger
 }
 
 export function emptyLedger(): LedgerState {
   return {
-    version: 3,
+    version: 4,
     allTime: zeroBuckets(),
     days: {},
     months: {},
@@ -480,9 +626,9 @@ export function emptyLedger(): LedgerState {
   }
 }
 
-export function loadLedger(file = stateFilePath()): LedgerState {
+export function loadLedger(file = stateFilePath(), config: UsageMonitorConfig = DEFAULT_CONFIG): LedgerState {
   try {
-    return sanitizeLedger(JSON.parse(fs.readFileSync(file, 'utf8')))
+    return sanitizeLedger(JSON.parse(fs.readFileSync(file, 'utf8')), config)
   } catch {
     return emptyLedger()
   }
@@ -518,7 +664,7 @@ export function foldUsage(
   at = new Date(),
   config: UsageMonitorConfig = DEFAULT_CONFIG,
 ): LedgerState {
-  const next = costedBucketsOf(usage, at, config)
+  const next = costedBucketsOf(usage, at, config, model)
   const key = `${sessionId}:${turn}:${step}`
   const delta = deltaBuckets(next, ledger.lastStep[key])
   if (isZero(delta)) return ledger
@@ -648,15 +794,15 @@ interface HttpResponse {
 }
 
 export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void {
+  const staticConfig: UsageMonitorConfig = { ...DEFAULT_CONFIG, ...(config ?? {}) }
   const ledgerFile = stateFilePath()
-  let ledger = pruneLastStep(loadLedger(ledgerFile))
+  let ledger = pruneLastStep(loadLedger(ledgerFile, staticConfig))
   let saveTimer: NodeJS.Timeout | undefined
   let balance: BalanceSnapshot = { ok: false, fetchedAt: 0, error: 'not fetched yet' }
   let balanceInFlight: Promise<BalanceSnapshot> | undefined
   let pollTimer: NodeJS.Timeout | undefined
   const sysSampler = createSysSampler()
 
-  const staticConfig: UsageMonitorConfig = { ...DEFAULT_CONFIG, ...(config ?? {}) }
   let resolveConfig: () => UsageMonitorConfig = () => staticConfig
   const dynamic = (): UsageMonitorConfig => resolveConfig()
 

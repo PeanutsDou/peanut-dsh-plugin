@@ -46,7 +46,8 @@ test('host apply wires session usage events into ledger and serves the status ro
     logger: { warn() {}, error() {} },
   }
 
-  apply(ctx, { balanceUrl: 'http://127.0.0.1:9', balancePollMs: 60000 })
+  // Pin the legacy pro rate table so the smoke test is not time-of-day dependent.
+  apply(ctx, { balanceUrl: 'http://127.0.0.1:9', balancePollMs: 60000, priceEpoch: '2099-01-01' })
 
   const session = { id: 'smoke-session', header: { cwd: 'D:\\demo' } }
   const emit = (event) => {
@@ -76,7 +77,7 @@ test('host apply wires session usage events into ledger and serves the status ro
     writeHead() {},
     end(chunk) { body = typeof chunk === 'string' ? chunk : chunk.toString() },
   }
-  statusRoute.handler({ method: 'GET' }, res)
+  await statusRoute.handler({ method: 'GET' }, res)
   const status = JSON.parse(body)
   assert.equal(status.ok, true)
   assert.equal(status.usage.allTime.uncachedInputTokens, 120)

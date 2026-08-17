@@ -8,6 +8,7 @@ import {
   bucketsOf,
   cacheHitRate,
   costedBucketsOf,
+  DEFAULT_CONFIG,
   deltaBuckets,
   emptyLedger,
   foldUsage,
@@ -41,13 +42,13 @@ test('foldUsage replaces the same step sample instead of double counting', () =>
     outputTokens: 60,
     cacheReadTokens: 400,
     cacheWriteTokens: 5,
-    // (120 + 5) * 3 + 400 * 0.025 + 60 * 6 = 745, per 1M
-    costCny: 0.000745,
+    // flash legacy prices: (120 + 5) * 1 + 400 * 0.02 + 60 * 2 = 253, per 1M
+    costCny: 0.000253,
   })
   assert.equal(ledger.days['2026-08-15'].uncachedInputTokens, 120)
   assert.equal(ledger.months['2026-08'].outputTokens, 60)
   assert.equal(ledger.sessions.s1.outputTokens, 60)
-  assert.equal(ledger.sessions.s1.costCny, 0.000745)
+  assert.equal(ledger.sessions.s1.costCny, 0.000253)
 })
 
 test('foldUsage clamps a downward revision to zero and never erases history', () => {
@@ -58,7 +59,8 @@ test('foldUsage clamps a downward revision to zero and never erases history', ()
   assert.equal(ledger.allTime.inputTokens, undefined)
   assert.equal(ledger.allTime.uncachedInputTokens, 100)
   assert.equal(ledger.allTime.outputTokens, 50)
-  assert.equal(ledger.allTime.costCny, 0.0006)
+  // flash legacy prices: 100 * 1 + 50 * 2 = 200, per 1M
+  assert.equal(ledger.allTime.costCny, 0.0002)
 })
 
 test('usage is attributed to the local calendar day and month of receipt', () => {
@@ -116,9 +118,60 @@ test('a v2 ledger without byModel loads as an empty per-model split', () => {
   const file = path.join(dir, 'state.json')
   fs.writeFileSync(file, JSON.stringify(v2))
   const loaded = loadLedger(file)
-  assert.equal(loaded.version, 3)
+  assert.equal(loaded.version, 4)
   assert.deepEqual(loaded.byModel, { allTime: {}, days: {}, months: {} })
   assert.equal(loaded.allTime.uncachedInputTokens, 5)
+  assert.equal(loaded.allTime.costCny, 0.0001)
+})
+
+test('v3 flash buckets priced with pro rates are corrected on load', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-usage-monitor-v3-'))
+  const file = path.join(dir, 'state.json')
+  const flash = {
+    uncachedInputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+    cacheWriteTokens: 0,
+    // v3 charged flash with pro peak prices: 9 + 27 + 0.3 = 36.3.
+    costCny: 36.3,
+  }
+  const pro = {
+    uncachedInputTokens: 500_000,
+    outputTokens: 200_000,
+    cacheReadTokens: 100_000,
+    cacheWriteTokens: 0,
+    costCny: 9.93,
+  }
+  const v3 = {
+    version: 3,
+    allTime: { ...flash, costCny: 46.23 },
+    days: { '2026-08-17': { ...flash, costCny: 46.23 } },
+    months: { '2026-08': { ...flash, costCny: 46.23 } },
+    sessions: {},
+    lastStep: {},
+    byModel: {
+      allTime: { 'deepseek-v4-flash': flash, 'deepseek-v4-pro': pro },
+      days: { '2026-08-17': { 'deepseek-v4-flash': flash, 'deepseek-v4-pro': pro } },
+      months: { '2026-08': { 'deepseek-v4-flash': flash, 'deepseek-v4-pro': pro } },
+    },
+  }
+  fs.writeFileSync(file, JSON.stringify(v3))
+
+  const loaded = loadLedger(file, DEFAULT_CONFIG)
+  assert.equal(loaded.version, 4)
+  assert.equal(loaded.allTime.costCny, 36.3 / 3 + 9.93)
+  assert.equal(loaded.days['2026-08-17'].costCny, 36.3 / 3 + 9.93)
+  assert.equal(loaded.months['2026-08'].costCny, 36.3 / 3 + 9.93)
+  assert.equal(loaded.byModel.allTime['deepseek-v4-flash'].costCny, 12.1)
+  assert.equal(loaded.byModel.days['2026-08-17']['deepseek-v4-flash'].costCny, 12.1)
+  assert.equal(loaded.byModel.months['2026-08']['deepseek-v4-flash'].costCny, 12.1)
+  assert.equal(loaded.byModel.allTime['deepseek-v4-pro'].costCny, 9.93)
+  assert.equal(loaded.allTime.uncachedInputTokens, 1_000_000)
+
+  // Persist as v4, then reload: the corrected format must not migrate again.
+  saveLedger(loaded, file)
+  const reloaded = loadLedger(file, DEFAULT_CONFIG)
+  assert.equal(reloaded.byModel.allTime['deepseek-v4-flash'].costCny, 12.1)
 })
 
 test('cache hit rate uses DSH billed-input vocabulary', () => {
@@ -182,6 +235,51 @@ test('pricing uses legacy rates before the epoch and Beijing peak/off-peak after
     peakOutputPerM: 27,
   })
   assert.equal(sample.costCny, 9)
+})
+
+test('flash usage is priced with the flash table, not the pro table', () => {
+  const config = { ...DEFAULT_CONFIG }
+
+  // 2026-08-17T01:00Z = Beijing 09:00, peak.
+  assert.deepEqual(
+    ratesForUsage(config, new Date('2026-08-17T01:00:00.000Z'), 'deepseek-v4-flash'),
+    { cacheHit: 0.1, input: 3, output: 9 },
+  )
+  // 2026-08-17T04:00Z = Beijing 12:00, off-peak gap between 12 and 14.
+  assert.deepEqual(
+    ratesForUsage(config, new Date('2026-08-17T04:00:00.000Z'), 'deepseek-v4-flash'),
+    { cacheHit: 0.05, input: 1.5, output: 4.5 },
+  )
+  // Before the epoch use the legacy flash price table.
+  assert.deepEqual(
+    ratesForUsage(config, new Date('2026-08-16T01:00:00.000Z'), 'deepseek-v4-flash'),
+    { cacheHit: 0.02, input: 1, output: 2 },
+  )
+
+  const flash = costedBucketsOf(
+    { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0 },
+    new Date('2026-08-17T01:00:00.000Z'),
+    config,
+    'deepseek-v4-flash',
+  )
+  const pro = costedBucketsOf(
+    { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0 },
+    new Date('2026-08-17T01:00:00.000Z'),
+    config,
+    'deepseek-v4-pro',
+  )
+  assert.equal(flash.costCny, 3)
+  assert.equal(pro.costCny, 9)
+})
+
+test('foldUsage records flash cost with the flash peak price', () => {
+  const ledger = foldUsage(emptyLedger(), 's1', '会话一', 1, 1, {
+    inputTokens: 1_000_000,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+  }, 'deepseek-v4-flash', new Date('2026-08-17T01:00:00.000Z'))
+  assert.equal(ledger.allTime.costCny, 3)
+  assert.equal(ledger.byModel.allTime['deepseek-v4-flash'].costCny, 3)
 })
 
 test('DeepSeek balance payload parses numeric strings and defaults currency', () => {
