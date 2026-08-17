@@ -33,7 +33,7 @@ interface StatusData {
     memTotalGb: number
     cpuPercent: number
     cpuCores: number
-    gpu: { utilPercent: number; memUsedMb: number; memTotalMb: number } | null
+    gpu: { model: string | null; utilPercent: number; memUsedMb: number; memTotalMb: number } | null
     at: number
   }
   balance: {
@@ -601,7 +601,7 @@ function UsageMonitor(): JSX.Element {
       `CPU ${Math.round(sysinfo.cpuPercent)}%/${sysinfo.cpuCores}核`,
       sysinfo.gpu === null
         ? null
-        : `GPU ${Math.round(sysinfo.gpu.utilPercent)}%/${(sysinfo.gpu.memTotalMb / 1024).toFixed(0)}G`,
+        : `GPU ${Math.round(sysinfo.gpu.utilPercent)}%/${(sysinfo.gpu.memTotalMb / 1024).toFixed(0)}G${sysinfo.gpu.model === null ? '' : `·${sysinfo.gpu.model}`}`,
     ].filter((part): part is string => part !== null).join(' · ')
 
   const rect = barRef.current?.getBoundingClientRect()

@@ -141,7 +141,7 @@ export interface SysInfoSnapshot {
   cpuPercent: number
   /** Logical CPU core count, e.g. 16. */
   cpuCores: number
-  gpu: { utilPercent: number; memUsedMb: number; memTotalMb: number } | null
+  gpu: { model: string | null; utilPercent: number; memUsedMb: number; memTotalMb: number } | null
   at: number
 }
 
@@ -171,18 +171,30 @@ function cpuUsagePercent(prev: CpuSample, cur: CpuSample): number {
   return Math.round((1 - idleDelta / totalDelta) * 1000) / 10
 }
 
-/** Parse the first `nvidia-smi --format=csv,noheader,nounits` line. */
-export function parseNvidiaSmi(line: string): { utilPercent: number; memUsedMb: number; memTotalMb: number } | null {
-  const parts = line.split(',').map(part => Number(part.trim()))
-  if (parts.length < 3 || parts.some(part => !Number.isFinite(part))) return null
-  const [utilPercent, memUsedMb, memTotalMb] = parts
-  if (utilPercent === undefined || memUsedMb === undefined || memTotalMb === undefined) return null
-  return { utilPercent, memUsedMb, memTotalMb }
+/** Short NVIDIA model label from the full name, e.g. "RTX 4070 Ti" → "RTX 4070Ti". */
+export function extractGpuModel(name: string): string | null {
+  const match = name.match(/\b(RTX|GTX|Quadro|Tesla|A)\s*(\d+)\s*(Ti|Super|S|Max-Q)?\b/i)
+  if (match === null) return null
+  const series = match[1]?.toUpperCase() ?? ''
+  const digits = match[2] ?? ''
+  const suffix = (match[3] ?? '').replace(/\s+/g, '')
+  return series === 'A' ? `A${digits}${suffix}` : `${series} ${digits}${suffix}`
 }
 
-function readNvidiaGpu(): Promise<{ utilPercent: number; memUsedMb: number; memTotalMb: number } | null> {
+/** Parse the first `nvidia-smi --format=csv,noheader,nounits` line (name + stats). */
+export function parseNvidiaSmi(line: string): { model: string | null; utilPercent: number; memUsedMb: number; memTotalMb: number } | null {
+  const comma = line.indexOf(',')
+  const name = (comma === -1 ? line : line.slice(0, comma)).trim()
+  const stats = (comma === -1 ? '' : line.slice(comma + 1)).split(',').map(part => Number(part.trim()))
+  if (stats.length < 3 || stats.some(part => !Number.isFinite(part))) return null
+  const [utilPercent, memUsedMb, memTotalMb] = stats
+  if (utilPercent === undefined || memUsedMb === undefined || memTotalMb === undefined) return null
+  return { model: extractGpuModel(name), utilPercent, memUsedMb, memTotalMb }
+}
+
+function readNvidiaGpu(): Promise<{ model: string | null; utilPercent: number; memUsedMb: number; memTotalMb: number } | null> {
   return new Promise(resolve => {
-    execFile('nvidia-smi', ['--query-gpu=utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'], {
+    execFile('nvidia-smi', ['--query-gpu=name,utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'], {
       timeout: 3000,
       windowsHide: true,
     }, (error, stdout) => {
