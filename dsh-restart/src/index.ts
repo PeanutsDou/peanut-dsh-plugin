@@ -83,6 +83,117 @@ const WATCHDOG_PID_FILENAME = 'dsh-watchdog.pid'
 /** Restart-in-progress flag: stops the watchdog from racing a deliberate restart. */
 const RESTARTING_FLAG_FILENAME = 'dsh-restarting.flag'
 
+/**
+ * Rollback artifacts: a pre-restart snapshot of the mutable composition files
+ * (profile cordis.patch.yml + settings.yaml) plus the helper's attempt ledger.
+ * On a failed relaunch the detached helper restores the snapshot and retries,
+ * so a plugin/config change that bricks startup is undone automatically.
+ */
+const ROLLBACK_DIRNAME = 'dsh-restart'
+const ROLLBACK_SUBDIR = 'rollback'
+const SNAPSHOT_MANIFEST = 'manifest.json'
+const ATTEMPTS_FILE = 'attempts.json'
+const MAX_ROLLBACK_ATTEMPTS = 5
+
+function rollbackRootDir(): string {
+  return path.join(homeDir(), ROLLBACK_DIRNAME, ROLLBACK_SUBDIR)
+}
+
+function rollbackSnapshotDir(): string {
+  return path.join(rollbackRootDir(), 'latest')
+}
+
+function rollbackManifestPath(): string {
+  return path.join(rollbackSnapshotDir(), SNAPSHOT_MANIFEST)
+}
+
+function rollbackAttemptsPath(): string {
+  return path.join(rollbackRootDir(), ATTEMPTS_FILE)
+}
+
+/** Relative files that can brick startup when broken: profile patches + user settings. */
+function snapshotSources(): Array<{ abs: string; rel: string }> {
+  const out: Array<{ abs: string; rel: string }> = []
+  const home = homeDir()
+  const profiles = path.join(home, 'profiles')
+  try {
+    for (const entry of fs.readdirSync(profiles, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const patch = path.join(profiles, entry.name, 'cordis.patch.yml')
+      if (fs.existsSync(patch)) out.push({ abs: patch, rel: `profiles/${entry.name}/cordis.patch.yml` })
+    }
+  } catch { /* no profiles dir yet */ }
+  const settings = path.join(home, 'settings.yaml')
+  if (fs.existsSync(settings)) out.push({ abs: settings, rel: 'settings.yaml' })
+  return out
+}
+
+/**
+ * Snapshot the mutable composition files before a restart. The helper restores
+ * these verbatim when the new process fails to come up, which rolls the plugin
+ * set back to the pre-restart state. Returns the manifest path, or null when
+ * there is nothing worth snapshotting.
+ */
+function snapshotConfig(): string | null {
+  const sources = snapshotSources()
+  if (sources.length === 0) return null
+  try {
+    const dir = rollbackSnapshotDir()
+    fs.rmSync(dir, { recursive: true, force: true })
+    fs.mkdirSync(dir, { recursive: true })
+    const files: Array<{ rel: string; size: number }> = []
+    for (const source of sources) {
+      const target = path.join(dir, source.rel)
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.copyFileSync(source.abs, target)
+      files.push({ rel: source.rel, size: fs.statSync(target).size })
+    }
+    const manifest = {
+      createdAt: new Date().toISOString(),
+      pid: process.pid,
+      files,
+    }
+    fs.writeFileSync(rollbackManifestPath(), JSON.stringify(manifest, null, 2) + '\n', 'utf8')
+    debugLog(`snapshot written: ${dir} (${files.length} file(s))`)
+    return rollbackManifestPath()
+  } catch (error) {
+    debugLog('snapshotConfig THREW: ' + String(error))
+    return null
+  }
+}
+
+/** Read the helper's rollback attempt ledger (survives the restart). */
+function readRollbackAttempts(): {
+  attempts: number
+  errors: string[]
+  rolledBack: boolean
+  lastAttemptAt?: string
+} {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(rollbackAttemptsPath(), 'utf8')) as {
+      attempts?: unknown
+      errors?: unknown
+      rolledBack?: unknown
+      lastAttemptAt?: unknown
+    }
+    return {
+      attempts: Number(parsed.attempts) > 0 ? Math.floor(Number(parsed.attempts)) : 0,
+      errors: Array.isArray(parsed.errors) ? parsed.errors.filter((e): e is string => typeof e === 'string') : [],
+      rolledBack: parsed.rolledBack === true,
+      ...(typeof parsed.lastAttemptAt === 'string' ? { lastAttemptAt: parsed.lastAttemptAt } : {}),
+    }
+  } catch {
+    return { attempts: 0, errors: [], rolledBack: false }
+  }
+}
+
+/** Log any rollback history from a failed previous restart (called at apply). */
+function reportRollbackHistory(): void {
+  const record = readRollbackAttempts()
+  if (record.attempts <= 0) return
+  debugLog(`previous restart recovered after ${record.attempts} rollback attempt(s); rolledBack=${record.rolledBack}; errors=${JSON.stringify(record.errors.slice(-3))}`)
+}
+
 function homeDir(): string {
   return process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
 }
@@ -535,7 +646,7 @@ function spawnDsh(attempt, cb) {
     child.unref()
     const start = Date.now()
     function poll() {
-      portUp(function (up) {
+      portUp(port, function (up) {
         if (up) {
           log('relaunched: port ' + port + ' up after ' + (Date.now() - start) + 'ms')
           cb(true)
@@ -771,6 +882,15 @@ function spawnOfflineRunner(missionPath: string): void {
  * It keeps a short grace window to catch early spawn failures (EADDRINUSE /
  * ENOENT / bad cwd), retries a few times, and writes a diagnostic log to the
  * restart error log. Exported for unit tests.
+ *
+ * Rollback: before every spawn attempt the plugin snapshots the mutable
+ * composition files (profile cordis.patch.yml + settings.yaml) into
+ * `rollbackDir/latest`. When a relaunch fails to bring the port up, the helper
+ * restores that snapshot verbatim (undoing whatever plugin/config change the
+ * restart was meant to load), records the failure plus the new process's
+ * stderr tail into `rollbackDir/attempts.json`, and retries. After
+ * `maxRollbackAttempts` consecutive rollback rounds it gives up and leaves the
+ * environment at the rolled-back state for manual repair.
  */
 export function buildRestartHelperScript(
   argv: string[],
@@ -779,12 +899,15 @@ export function buildRestartHelperScript(
   logErr: string,
   delayMs: number,
   port: number | undefined,
+  rollbackDir = rollbackRootDir(),
+  maxRollbackAttempts = MAX_ROLLBACK_ATTEMPTS,
 ): string {
   const waitTimeoutMs = Math.max(30000, Math.min(120000, delayMs + 15000))
   const retryAttempts = 5
   const retryDelayMs = 1200
   const graceMs = 3000
   const flagPath = restartingFlagFilePath()
+  const rollbackLiteral = rollbackDir.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
   return [
     "'use strict'",
     "const { spawn } = require('node:child_process')",
@@ -802,8 +925,61 @@ export function buildRestartHelperScript(
     `const retryDelayMs = ${retryDelayMs}`,
     `const graceMs = ${graceMs}`,
     `const restartingFlag = ${JSON.stringify(flagPath)}`,
+    `const rollbackDir = '${rollbackLiteral}'`,
+    `const maxRollbackAttempts = ${maxRollbackAttempts}`,
+    "const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')",
+    "const attemptsFile = path.join(rollbackDir, 'attempts.json')",
+    "const manifestFile = path.join(rollbackDir, 'latest', 'manifest.json')",
     "function log(msg) {",
     "  try { fs.appendFileSync(logErr, new Date().toISOString() + ' [dsh-restart-helper] ' + msg + '\\n', 'utf8') } catch {}",
+    "}",
+    "function readJson(file, dflt) {",
+    "  try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return dflt }",
+    "}",
+    "function writeJson(file, obj) {",
+    "  try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(obj, null, 2) + '\\n', 'utf8') } catch (e) { log('write ' + file + ' failed: ' + e) }",
+    "}",
+    "function tailLines(file, n) {",
+    "  try {",
+    "    const lines = fs.readFileSync(file, 'utf8').split(/\\r?\\n/).filter(Boolean)",
+    "    return lines.slice(-n)",
+    "  } catch { return [] }",
+    "}",
+    "function recordRollback(reason, attemptNumber) {",
+    "  const prev = readJson(attemptsFile, { attempts: 0, errors: [], rolledBack: false })",
+    "  const errors = tailLines(logErr, 40)",
+    "  writeJson(attemptsFile, {",
+    "    attempts: attemptNumber,",
+    "    errors: (Array.isArray(prev.errors) ? prev.errors : []).concat(errors).slice(-20),",
+    "    rolledBack: true,",
+    "    lastAttemptAt: new Date().toISOString(),",
+    "    lastReason: reason,",
+    "  })",
+    "}",
+    "function recordSuccess(recoveredAttempts, recoveredErrors) {",
+    "  if (recoveredAttempts > 0) {",
+    "    log('restart succeeded after ' + recoveredAttempts + ' rollback attempt(s)')",
+    "    writeJson(attemptsFile, { attempts: 0, errors: [], rolledBack: false, recovered: recoveredAttempts, recoveredErrors: recoveredErrors, lastAttemptAt: new Date().toISOString() })",
+    "  } else {",
+    "    writeJson(attemptsFile, { attempts: 0, errors: [], rolledBack: false })",
+    "  }",
+    "}",
+    "function restoreSnapshot(reason) {",
+    "  const manifest = readJson(manifestFile, null)",
+    "  let restored = 0",
+    "  if (manifest && Array.isArray(manifest.files)) {",
+    "    for (const f of manifest.files) {",
+    "      const src = path.join(rollbackDir, 'latest', String(f.rel))",
+    "      const dst = path.join(home, String(f.rel))",
+    "      try {",
+    "        fs.mkdirSync(path.dirname(dst), { recursive: true })",
+    "        fs.copyFileSync(src, dst)",
+    "        restored += 1",
+    "      } catch (e) { log('rollback restore failed for ' + f.rel + ': ' + e) }",
+    "    }",
+    "  }",
+    "  if (restored > 0) log('rollback: restored ' + restored + ' snapshot file(s) after: ' + reason)",
+    "  else log('rollback: no snapshot to restore for: ' + reason)",
     "}",
     "function portUp(cb) {",
     "  const s = net.connect({ port: port, host: '127.0.0.1', timeout: 300 })",
@@ -830,6 +1006,7 @@ export function buildRestartHelperScript(
     "  poll()",
     "}",
     "let attempts = 0",
+    "let rollbackCount = 0",
     "function clearFlag() { try { fs.rmSync(restartingFlag, { force: true }) } catch {} }",
     "function cmdQuote(v) {",
     "  const s = String(v)",
@@ -857,7 +1034,15 @@ export function buildRestartHelperScript(
     "  function retry(reason) {",
     "    if (done) return",
     "    done = true",
-    "    log(reason + '; retrying in ' + retryDelayMs + 'ms')",
+    "    rollbackCount += 1",
+    "    restoreSnapshot(reason)",
+    "    recordRollback(reason, rollbackCount)",
+    "    if (rollbackCount >= maxRollbackAttempts) {",
+    "      log('giving up after ' + rollbackCount + ' rollback attempts; environment restored to snapshot, manual repair needed')",
+    "      clearFlag()",
+    "      return",
+    "    }",
+    "    log(reason + '; rolled back, retrying in ' + retryDelayMs + 'ms')",
     "    setTimeout(spawnNew, retryDelayMs)",
     "  }",
     "  let vbs",
@@ -876,8 +1061,12 @@ export function buildRestartHelperScript(
     "      if (up) {",
     "        done = true",
     "        let idxPid = null",
-    "        try { idxPid = JSON.parse(fs.readFileSync(path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'dsh-process.json'), 'utf8')).pid } catch {}",
+    "        try { idxPid = JSON.parse(fs.readFileSync(path.join(home, 'dsh-process.json'), 'utf8')).pid } catch {}",
     "        log('port ' + port + ' up after ' + (Date.now() - start) + 'ms' + (idxPid === null ? '' : '; new pid ' + idxPid) + '; helper done')",
+    "        const prev = readJson(attemptsFile, { attempts: 0, errors: [], rolledBack: false })",
+    "        const prevAttempts = Number(prev && prev.attempts) > 0 ? Math.floor(Number(prev.attempts)) : 0",
+    "        const prevErrors = Array.isArray(prev && prev.errors) ? prev.errors : []",
+    "        recordSuccess(prevAttempts > 0 ? prevAttempts : rollbackCount, prevErrors)",
     "        clearFlag()",
     "        return",
     "      }",
@@ -887,7 +1076,7 @@ export function buildRestartHelperScript(
     "  }",
     "  setTimeout(poll, 800)",
     "}",
-    "log('helper start pid=' + process.pid + ' cwd=' + cwd + ' port=' + port + ' waitTimeoutMs=' + waitTimeoutMs)",
+    "log('helper start pid=' + process.pid + ' cwd=' + cwd + ' port=' + port + ' waitTimeoutMs=' + waitTimeoutMs + ' rollbackDir=' + rollbackDir)",
     "waitPortDown(waitTimeoutMs, function (down) {",
     "  log(down ? 'port released' : 'port wait timed out')",
     "  spawnNew()",
@@ -904,6 +1093,9 @@ export function buildRestartHelperScript(
  */
 function restart(delayMs: number, mission?: OfflineMission): RestartInfo {
   writeRestartingFlag()
+  // Snapshot the mutable composition files before we tear the process down, so
+  // the detached helper can restore them if the relaunch fails to come up.
+  snapshotConfig()
   const argv = [...process.execArgv, ...process.argv.slice(1)]
   const cwd = process.cwd()
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
@@ -1073,6 +1265,12 @@ export function apply(ctx: Context): void {
     debugLog('apply: tryAutoContinue THREW: ' + String(error))
   }
   try {
+    reportRollbackHistory()
+    debugLog('apply: rollback history reported')
+  } catch (error) {
+    debugLog('apply: reportRollbackHistory THREW: ' + String(error))
+  }
+  try {
     ensureWatchdog(dynamic)
     debugLog('apply: watchdog ensured')
   } catch (error) {
@@ -1114,6 +1312,11 @@ export function apply(ctx: Context): void {
       '重启整个 DeepSeek Harness 进程，用于重新加载插件与配置（profile 的 cordis 组合、settings 等）。'
       + '直接读取当前 node 进程的 pid/工作目录/启动命令行，派生一个 detach 的 helper，'
       + '在旧进程退出并释放端口后以原命令行在原目录重新拉起，然后旧进程退出。'
+      + '重启前自动对 profile 的 cordis.patch.yml 与 settings.yaml 做快照；'
+      + '若新进程在 30 秒内未能就绪（插件或配置错误导致启动失败），helper 自动恢复快照'
+      + '（回滚到重启前的插件组合）并再次尝试，最多 5 次；'
+      + '期间每次失败的 stderr 摘要与回滚历史记录在 $DSH_HOME/dsh-restart/rollback/attempts.json，'
+      + '重启成功后可在该文件看到 recovered 字段。'
       + '触发后当前会话连接会短暂中断，网页随后自动重连到新进程。'
       + '返回旧进程 pid、cwd、命令行与日志文件路径。',
     parameters: {

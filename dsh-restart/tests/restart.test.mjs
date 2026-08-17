@@ -126,10 +126,9 @@ test('restart helper waits for the old process to release the port, then relaunc
   const newPid = Number(fs.readFileSync(newPidFile, 'utf8'))
   assert.notEqual(newPid, old.pid)
 
-  // The grace-period success line lands ~3s after the new process spawns;
-  // wait for it instead of racing the helper's timer.
-  const graceSeen = await waitForFileContaining(errLog, 'alive after 3000ms', 8000)
-  assert.ok(graceSeen, 'helper should confirm the new process survived its grace window')
+  // The success line lands once the new process binds the port.
+  const doneSeen = await waitForFileContaining(errLog, 'helper done', 8000)
+  assert.ok(doneSeen, 'helper should confirm the new process came up')
 
   kill(old.pid)
   kill(newPid)
@@ -153,7 +152,11 @@ test('offline runner executes a BOM-less UTF-8 .ps1 on PowerShell 5.1 and relaun
   const newProcess = path.join(tmp, 'fake-dsh.cjs')
   fs.writeFileSync(newProcess, `
     const fs = require('node:fs')
+    const net = require('node:net')
     fs.writeFileSync(${JSON.stringify(newPidFile)}, String(process.pid))
+    // Bind the mission port so the runner's relaunch poll sees it come up.
+    const s = net.createServer(() => {})
+    s.listen(${port}, '127.0.0.1', () => {})
     setInterval(() => {}, 1000)
   `)
 

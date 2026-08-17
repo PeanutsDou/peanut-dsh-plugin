@@ -5,6 +5,7 @@
 ## 功能
 
 - **模型工具 `restart_harness`**：让 agent 直接安排一次进程重启（可选 `delayMs`）。重启 helper 会**等待旧进程释放端口**（而不是固定延时）后拉起新进程，并对早期退出自动重试、把诊断写入 `%TEMP%\dsh-restart-*.err.log`。
+- **失败自动回滚**：重启前自动把各 profile 的 `cordis.patch.yml` 与 `settings.yaml` 快照到 `$DSH_HOME/dsh-restart/rollback/latest/`；若新进程 30 秒内未能就绪（插件/配置错误导致启动失败），helper 自动恢复快照（回滚到重启前的插件组合）并再次拉起，**最多 5 次**后放弃并停留在已回滚状态等待人工修复。每次失败的 stderr 尾部与回滚计数写入 `$DSH_HOME/dsh-restart/rollback/attempts.json`，重启成功后 `recovered` 字段记录恢复次数；DSH 启动时把上次回滚历史写入 `dsh-restart-auto.log`。
 - **模型工具 `restart_with_tasks`**：安排一次"停机离线任务 + 重启"——旧进程退出后、新进程拉起前，由独立 runner 依次执行预写的自动化脚本，再自动重启（详见下文）。
 - **`.ps1` 离线步骤编码安全**：runner 优先使用 `pwsh.exe -File`；没有 pwsh 时用 Windows PowerShell 5.1 的 `-EncodedCommand` 回退，按 UTF-8 读取 BOM-less 脚本，不再受系统 ANSI/GBK 代码页影响。
 - **`/restart` 斜杠命令**：在 UI 里手动触发重启。
