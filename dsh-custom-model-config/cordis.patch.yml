@@ -1,0 +1,5 @@
+# dsh-custom-model-config bundle patch —— 设置聚合页签（client-only，host 为空挂载）。
+- insert:
+    - id: dsh-custom-model-config
+      name: '@peanutsdou/dsh-custom-model-config'
+      config: {}

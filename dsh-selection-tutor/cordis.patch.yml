@@ -1,0 +1,5 @@
+# dsh-selection-tutor bundle patch —— host 管理临时隐藏分支；client 提供划词按钮与浮动小窗。
+- insert:
+    - id: dsh-selection-tutor
+      name: '@peanutsdou/dsh-selection-tutor'
+      config: {}
