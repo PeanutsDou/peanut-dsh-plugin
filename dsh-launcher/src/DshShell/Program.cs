@@ -16,16 +16,6 @@ internal static class Program
     private const int Port = 3080;
     private const int SW_RESTORE = 9;
 
-    // 全局键盘钩子（双击 Ctrl 唤起）
-    private const int WH_KEYBOARD_LL = 13;
-    private const int WM_KEYDOWN = 0x0100;
-    private const int WM_KEYUP = 0x0101;
-    private const int VK_CONTROL = 0x11;
-    private const int VK_LCONTROL = 0xA2;
-    private const int VK_RCONTROL = 0xA3;
-    private const int TRIGGER_WINDOW_MS = 500;
-    private const int TRIGGER_COOLDOWN_MS = 300;
-
     /// 渲染进程崩溃自动重载的节流时间戳（避免崩溃死循环）。
     private static long _lastReloadTick;
 
@@ -37,20 +27,9 @@ internal static class Program
     private static int _wmShowMain;
     private static bool _closePromptShowing;
 
-    // 双击 Ctrl 检测状态
-    private static long _lastCtrlDownAt;
-    private static long _lastTriggeredAt;
-    private static bool _ctrlIsDown;
-
-    // 键盘钩子句柄 + 委托（static 字段保持引用，防止被 GC）
-    private static LowLevelKeyboardProc? _keyboardProc;
-    private static IntPtr _hookId = IntPtr.Zero;
-
-    // 文件搜索框 overlay（双击 Ctrl 唤起）
+    // 文件搜索框 overlay（已随 dsh-file-launcher 插件卸载；保留窗口代码备用）
     private static Form? _launcherForm;
     private static WebView2? _launcherWeb;
-
-    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
     /// <summary>
     /// 主窗口：监听第二个实例发来的"显示主窗口"消息，由第一个实例自己执行完整恢复，
@@ -82,18 +61,6 @@ internal static class Program
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr GetModuleHandle(string? lpModuleName);
-
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int RegisterWindowMessage(string message);
 
@@ -103,7 +70,7 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        // --tray：开机自启时静默启动到托盘（不显示主窗口），双击 Ctrl 直接可用
+        // --tray：开机自启时静默启动到托盘（不显示主窗口）
         _startInTray = args is not null
             && Array.Exists(args, a => a == "--tray" || a == "-tray" || a == "--minimized");
 
@@ -229,7 +196,6 @@ internal static class Program
         };
 
         SetupTray(form);
-        StartHotkey(form);
 
         Application.Run(form);
     }
@@ -277,7 +243,6 @@ internal static class Program
     private static void CleanupShutdown(WebView2 web)
     {
         try { web.Dispose(); } catch { /* ignore */ }
-        StopHotkey();
         KillDsh();
         _notifyIcon?.Dispose();
         _appIcon?.Dispose();
@@ -363,76 +328,6 @@ internal static class Program
         if (result == trayBtn) return ("tray", remember);
         if (result == exitBtn) return ("exit", remember);
         return ("cancel", false);
-    }
-
-    // ===== 全局双击 Ctrl 热键 =====
-
-    private static void StartHotkey(Form form)
-    {
-        try
-        {
-            _keyboardProc = HookCallback;
-            using var cur = Process.GetCurrentProcess();
-            using var mod = cur.MainModule;
-            var hMod = GetModuleHandle(mod?.ModuleName);
-            DebugLog($"StartHotkey module={mod?.ModuleName} hMod={hMod}");
-            _hookId = SetWindowsHookEx(WH_KEYBOARD_LL, _keyboardProc, hMod, 0);
-            var error = Marshal.GetLastWin32Error();
-            DebugLog($"StartHotkey hook={_hookId} error={error}");
-            if (_hookId == IntPtr.Zero)
-            {
-                _hookId = SetWindowsHookEx(WH_KEYBOARD_LL, _keyboardProc, IntPtr.Zero, 0);
-                error = Marshal.GetLastWin32Error();
-                DebugLog($"StartHotkey fallback hook={_hookId} error={error}");
-            }
-        }
-        catch (Exception ex)
-        {
-            DebugLog($"StartHotkey exception: {ex}");
-        }
-    }
-
-    private static void StopHotkey()
-    {
-        if (_hookId != IntPtr.Zero)
-        {
-            UnhookWindowsHookEx(_hookId);
-            _hookId = IntPtr.Zero;
-        }
-    }
-
-    private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
-    {
-        if (nCode >= 0)
-        {
-            var vkCode = Marshal.ReadInt32(lParam);
-            var isCtrl = vkCode is VK_CONTROL or VK_LCONTROL or VK_RCONTROL;
-            if (isCtrl)
-            {
-                if (wParam == (IntPtr)WM_KEYDOWN)
-                {
-                    if (!_ctrlIsDown)
-                    {
-                        _ctrlIsDown = true;
-                        var now = Environment.TickCount64;
-                        var withinDoubleTap = now - _lastCtrlDownAt <= TRIGGER_WINDOW_MS;
-                        var outsideCooldown = now - _lastTriggeredAt > TRIGGER_COOLDOWN_MS;
-                        _lastCtrlDownAt = now;
-                        if (withinDoubleTap && outsideCooldown)
-                        {
-                            _lastTriggeredAt = now;
-                            DebugLog("double-Ctrl triggered -> ToggleLauncher");
-                            ToggleLauncher();
-                        }
-                    }
-                }
-                else if (wParam == (IntPtr)WM_KEYUP)
-                {
-                    _ctrlIsDown = false;
-                }
-            }
-        }
-        return CallNextHookEx(_hookId, nCode, wParam, lParam);
     }
 
     private static void BringWindowToFront()
