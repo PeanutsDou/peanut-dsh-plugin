@@ -374,11 +374,21 @@ internal static class Program
             _keyboardProc = HookCallback;
             using var cur = Process.GetCurrentProcess();
             using var mod = cur.MainModule;
-            _hookId = SetWindowsHookEx(WH_KEYBOARD_LL, _keyboardProc, GetModuleHandle(mod?.ModuleName), 0);
+            var hMod = GetModuleHandle(mod?.ModuleName);
+            DebugLog($"StartHotkey module={mod?.ModuleName} hMod={hMod}");
+            _hookId = SetWindowsHookEx(WH_KEYBOARD_LL, _keyboardProc, hMod, 0);
+            var error = Marshal.GetLastWin32Error();
+            DebugLog($"StartHotkey hook={_hookId} error={error}");
+            if (_hookId == IntPtr.Zero)
+            {
+                _hookId = SetWindowsHookEx(WH_KEYBOARD_LL, _keyboardProc, IntPtr.Zero, 0);
+                error = Marshal.GetLastWin32Error();
+                DebugLog($"StartHotkey fallback hook={_hookId} error={error}");
+            }
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[DshShell] 全局热键注册失败: {ex.Message}");
+            DebugLog($"StartHotkey exception: {ex}");
         }
     }
 
