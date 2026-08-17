@@ -27,14 +27,14 @@ test('foldUsage replaces the same step sample instead of double counting', () =>
     outputTokens: 50,
     cacheReadTokens: 400,
     cacheWriteTokens: 0,
-  }, at)
+  }, 'deepseek-v4-flash', at)
   // finalized assistant/message usage for the SAME turn/step replaces it
   ledger = foldUsage(ledger, 's1', '会话一', 1, 2, {
     inputTokens: 120,
     outputTokens: 60,
     cacheReadTokens: 400,
     cacheWriteTokens: 5,
-  }, at)
+  }, 'deepseek-v4-flash', at)
 
   assert.deepEqual(ledger.allTime, {
     uncachedInputTokens: 120,
@@ -53,8 +53,8 @@ test('foldUsage replaces the same step sample instead of double counting', () =>
 test('foldUsage clamps a downward revision to zero and never erases history', () => {
   let ledger = emptyLedger()
   const at = new Date('2026-08-15T05:00:00.000Z')
-  ledger = foldUsage(ledger, 's1', 's1', 1, 1, { inputTokens: 100, outputTokens: 50 }, at)
-  ledger = foldUsage(ledger, 's1', 's1', 1, 1, { inputTokens: 10, outputTokens: 5 }, at)
+  ledger = foldUsage(ledger, 's1', 's1', 1, 1, { inputTokens: 100, outputTokens: 50 }, 'deepseek-v4-flash', at)
+  ledger = foldUsage(ledger, 's1', 's1', 1, 1, { inputTokens: 10, outputTokens: 5 }, 'deepseek-v4-flash', at)
   assert.equal(ledger.allTime.inputTokens, undefined)
   assert.equal(ledger.allTime.uncachedInputTokens, 100)
   assert.equal(ledger.allTime.outputTokens, 50)
@@ -65,8 +65,8 @@ test('usage is attributed to the local calendar day and month of receipt', () =>
   let ledger = emptyLedger()
   const first = new Date(2026, 6, 31, 23, 59)
   const second = new Date(2026, 7, 1, 0, 1)
-  ledger = foldUsage(ledger, 's1', 's1', 1, 1, { inputTokens: 10, outputTokens: 1 }, first)
-  ledger = foldUsage(ledger, 's2', 's2', 1, 1, { inputTokens: 20, outputTokens: 2 }, second)
+  ledger = foldUsage(ledger, 's1', 's1', 1, 1, { inputTokens: 10, outputTokens: 1 }, 'flash', first)
+  ledger = foldUsage(ledger, 's2', 's2', 1, 1, { inputTokens: 20, outputTokens: 2 }, 'pro', second)
   assert.equal(ledger.days['2026-07-31'].uncachedInputTokens, 10)
   assert.equal(ledger.days['2026-08-01'].uncachedInputTokens, 20)
   assert.equal(ledger.months['2026-07'].outputTokens, 1)
@@ -81,10 +81,44 @@ test('ledger save/load round-trips through an atomic file', () => {
     outputTokens: 80,
     cacheReadTokens: 900,
     cacheWriteTokens: 7,
-  }, new Date('2026-08-15T05:00:00.000Z'))
+  }, 'model-a', new Date('2026-08-15T05:00:00.000Z'))
   saveLedger(ledger, file)
   const loaded = loadLedger(file)
   assert.deepEqual(loaded, ledger)
+})
+
+test('foldUsage splits buckets per model and the total stays the sum', () => {
+  let ledger = emptyLedger()
+  const at = new Date('2026-08-15T05:00:00.000Z')
+  ledger = foldUsage(ledger, 's1', 's1', 1, 1, { inputTokens: 100, outputTokens: 50 }, 'deepseek-v4-flash', at)
+  ledger = foldUsage(ledger, 's1', 's1', 2, 1, { inputTokens: 200, outputTokens: 100 }, 'deepseek-v4-pro', at)
+  assert.equal(ledger.allTime.uncachedInputTokens, 300)
+  assert.equal(ledger.byModel.allTime['deepseek-v4-flash'].uncachedInputTokens, 100)
+  assert.equal(ledger.byModel.allTime['deepseek-v4-pro'].uncachedInputTokens, 200)
+  assert.equal(ledger.byModel.days['2026-08-15']['deepseek-v4-pro'].outputTokens, 100)
+  assert.equal(ledger.byModel.months['2026-08']['deepseek-v4-flash'].outputTokens, 50)
+  // total cost equals the sum of the per-model costs
+  const total = ledger.allTime.costCny
+  const split = Object.values(ledger.byModel.allTime).reduce((sum, bucket) => sum + bucket.costCny, 0)
+  assert.ok(Math.abs(total - split) < 1e-9)
+})
+
+test('a v2 ledger without byModel loads as an empty per-model split', () => {
+  const v2 = {
+    version: 2,
+    allTime: { uncachedInputTokens: 5, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costCny: 0.0001 },
+    days: {},
+    months: {},
+    sessions: {},
+    lastStep: {},
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-usage-monitor-'))
+  const file = path.join(dir, 'state.json')
+  fs.writeFileSync(file, JSON.stringify(v2))
+  const loaded = loadLedger(file)
+  assert.equal(loaded.version, 3)
+  assert.deepEqual(loaded.byModel, { allTime: {}, days: {}, months: {} })
+  assert.equal(loaded.allTime.uncachedInputTokens, 5)
 })
 
 test('cache hit rate uses DSH billed-input vocabulary', () => {

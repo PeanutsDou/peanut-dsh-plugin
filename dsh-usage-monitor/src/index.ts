@@ -106,13 +106,19 @@ interface SessionRow extends CostedBuckets {
 }
 
 export interface LedgerState {
-  version: 2
+  version: 3
   allTime: CostedBuckets
   days: Record<string, CostedBuckets>
   months: Record<string, CostedBuckets>
   sessions: Record<string, SessionRow>
   /** Last buckets per `sessionId:turn:step`, used for replace-not-add folding. */
   lastStep: Record<string, CostedBuckets>
+  /** The same totals split per model id (from `request/header` snapshots). */
+  byModel: {
+    allTime: Record<string, CostedBuckets>
+    days: Record<string, Record<string, CostedBuckets>>
+    months: Record<string, Record<string, CostedBuckets>>
+  }
 }
 
 export interface BalanceSnapshot {
@@ -321,6 +327,7 @@ function sanitizeLedger(value: unknown): LedgerState {
   const months: Record<string, CostedBuckets> = {}
   const sessions: Record<string, SessionRow> = {}
   const lastStep: Record<string, CostedBuckets> = {}
+  const byModel = { allTime: {} as Record<string, CostedBuckets>, days: {} as Record<string, Record<string, CostedBuckets>>, months: {} as Record<string, Record<string, CostedBuckets>> }
   for (const [key, raw] of Object.entries((record.days ?? {}) as Record<string, unknown>)) days[key] = sanitizeBuckets(raw)
   for (const [key, raw] of Object.entries((record.months ?? {}) as Record<string, unknown>)) months[key] = sanitizeBuckets(raw)
   for (const [key, raw] of Object.entries((record.sessions ?? {}) as Record<string, unknown>)) {
@@ -333,24 +340,43 @@ function sanitizeLedger(value: unknown): LedgerState {
     }
   }
   for (const [key, raw] of Object.entries((record.lastStep ?? {}) as Record<string, unknown>)) lastStep[key] = sanitizeBuckets(raw)
+  const rawByModel = (record.byModel ?? {}) as Record<string, unknown>
+  const rawModelAllTime = (rawByModel.allTime ?? {}) as Record<string, unknown>
+  const rawModelDays = (rawByModel.days ?? {}) as Record<string, unknown>
+  const rawModelMonths = (rawByModel.months ?? {}) as Record<string, unknown>
+  for (const [key, raw] of Object.entries(rawModelAllTime)) byModel.allTime[key] = sanitizeBuckets(raw)
+  for (const [key, raw] of Object.entries(rawModelDays)) {
+    byModel.days[key] = {}
+    for (const [model, buckets] of Object.entries((raw ?? {}) as Record<string, unknown>)) {
+      byModel.days[key][model] = sanitizeBuckets(buckets)
+    }
+  }
+  for (const [key, raw] of Object.entries(rawModelMonths)) {
+    byModel.months[key] = {}
+    for (const [model, buckets] of Object.entries((raw ?? {}) as Record<string, unknown>)) {
+      byModel.months[key][model] = sanitizeBuckets(buckets)
+    }
+  }
   return {
-    version: 2,
+    version: 3,
     allTime: sanitizeBuckets(record.allTime),
     days,
     months,
     sessions,
     lastStep,
+    byModel,
   }
 }
 
 export function emptyLedger(): LedgerState {
   return {
-    version: 2,
+    version: 3,
     allTime: zeroBuckets(),
     days: {},
     months: {},
     sessions: {},
     lastStep: {},
+    byModel: { allTime: {}, days: {}, months: {} },
   }
 }
 
@@ -378,7 +404,8 @@ export function saveLedger(ledger: LedgerState, file = stateFilePath()): void {
 
 /**
  * Pure fold: replace the step's previous buckets and allocate the clamped delta
- * into all-time, local day/month, and per-session rows. Exported for tests.
+ * into all-time, local day/month, and per-session rows, plus the per-model
+ * split under `byModel`. Exported for tests.
  */
 export function foldUsage(
   ledger: LedgerState,
@@ -387,6 +414,7 @@ export function foldUsage(
   turn: number,
   step: number,
   usage: TokenUsageLike,
+  model = 'unknown',
   at = new Date(),
   config: UsageMonitorConfig = DEFAULT_CONFIG,
 ): LedgerState {
@@ -410,6 +438,16 @@ export function foldUsage(
   const months = { ...ledger.months }
   months[monthKey] = addBuckets(months[monthKey] ?? zeroBuckets(), delta)
 
+  const byModel = ledger.byModel
+  const modelDays = { ...byModel.days }
+  const modelDay = { ...(modelDays[dayKey] ?? {}) }
+  modelDay[model] = addBuckets(modelDay[model] ?? zeroBuckets(), delta)
+  modelDays[dayKey] = modelDay
+  const modelMonths = { ...byModel.months }
+  const modelMonth = { ...(modelMonths[monthKey] ?? {}) }
+  modelMonth[model] = addBuckets(modelMonth[model] ?? zeroBuckets(), delta)
+  modelMonths[monthKey] = modelMonth
+
   return {
     ...ledger,
     allTime: addBuckets(ledger.allTime, delta),
@@ -417,6 +455,11 @@ export function foldUsage(
     months,
     sessions: { ...ledger.sessions, [sessionId]: sessionRow },
     lastStep: { ...ledger.lastStep, [key]: next },
+    byModel: {
+      allTime: { ...byModel.allTime, [model]: addBuckets(byModel.allTime[model] ?? zeroBuckets(), delta) },
+      days: modelDays,
+      months: modelMonths,
+    },
   }
 }
 
@@ -545,7 +588,23 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
     console.error('[dsh-usage-monitor] settings section unavailable:', error)
   }
 
+  // Current model id, tracked from `request/header` snapshots so usage events
+  // fold into the right per-model bucket. Unknown until the first header.
+  let currentModel = 'unknown'
+
   ctx.on('session/event', (rawSession: unknown, rawEvent: unknown) => {
+    const event = rawEvent as {
+      type?: string
+      data?: {
+        header?: { config?: { model?: unknown } }
+        title?: unknown
+      }
+    }
+    if (event.type === 'request/header') {
+      const model = event.data?.header?.config?.model
+      if (typeof model === 'string' && model !== '') currentModel = model
+      return
+    }
     const sessionId = (rawSession as { id?: unknown } | undefined)?.id
     const title = titleOfEvent(rawEvent)
     if (title !== undefined && typeof sessionId === 'string') {
@@ -559,7 +618,7 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
     if (typeof sessionId !== 'string') return
     const sample = usageOfEvent(rawEvent)
     if (sample === undefined || !Number.isFinite(sample.turn) || !Number.isFinite(sample.step)) return
-    ledger = foldUsage(ledger, sessionId, sessionLabel(rawSession, sessionId), sample.turn, sample.step, sample.usage, new Date(), dynamic())
+    ledger = foldUsage(ledger, sessionId, sessionLabel(rawSession, sessionId), sample.turn, sample.step, sample.usage, currentModel, new Date(), dynamic())
     scheduleSave()
   })
 
@@ -637,6 +696,9 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
     const month = ledger.months[localMonthKey(now)] ?? zeroBuckets()
     const days = recentDays(ledger, 7, now)
     const weekCost = days.reduce((sum, row) => sum + row.buckets.costCny, 0)
+    const models = Object.keys(ledger.byModel.allTime).sort()
+    const modelCosts: Record<string, CostedBuckets> = {}
+    for (const model of models) modelCosts[model] = ledger.byModel.allTime[model] ?? zeroBuckets()
     return {
       ok: true,
       generatedAt: now.getTime(),
@@ -652,8 +714,10 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
         todayCacheHitRate: cacheHitRate(today),
         monthCacheHitRate: cacheHitRate(month),
         allTimeCacheHitRate: cacheHitRate(ledger.allTime),
-        days,
-        months: recentMonths(ledger, 12, now),
+        days: days.map(row => ({ date: row.date, buckets: row.buckets, byModel: ledger.byModel.days[row.date] ?? {} })),
+        months: recentMonths(ledger, 12, now).map(row => ({ month: row.month, buckets: row.buckets, byModel: ledger.byModel.months[row.month] ?? {} })),
+        models,
+        modelCosts,
       },
     }
   }

@@ -49,8 +49,10 @@ interface StatusData {
     todayCacheHitRate: number | null
     monthCacheHitRate: number | null
     allTimeCacheHitRate: number | null
-    days: Array<{ date: string; buckets: Buckets }>
-    months: Array<{ month: string; buckets: Buckets }>
+    days: Array<{ date: string; buckets: Buckets; byModel?: Record<string, Buckets> }>
+    months: Array<{ month: string; buckets: Buckets; byModel?: Record<string, Buckets> }>
+    models: string[]
+    modelCosts: Record<string, Buckets>
   }
 }
 
@@ -93,6 +95,10 @@ function ensureStyles(): void {
 .dsh-usage-table th:first-child,.dsh-usage-table td:first-child{text-align:left}
 .dsh-usage-table th{color:var(--dsw-alias-label-tertiary);font-weight:500}
 .dsh-usage-chart{margin-top:2px}
+.dsh-usage-chart-legend{display:flex;flex-wrap:wrap;gap:4px 12px;margin-bottom:6px;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.dsh-usage-chart-legend>span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.dsh-usage-chart-legend>span.total{color:var(--dsw-alias-label-primary);font-weight:600}
+.dsh-usage-swatch{width:9px;height:9px;border-radius:50%;flex:none}
 .dsh-usage-chart-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;font-size:12px;color:var(--dsw-alias-label-primary)}
 .dsh-usage-metric{display:flex;gap:4px}
 .dsh-usage-metric button{appearance:none;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 10px;background:transparent;color:var(--dsw-alias-label-tertiary);font:12px/1.6 system-ui;cursor:pointer}
@@ -164,14 +170,34 @@ interface ChartRow {
   key: string
   costCny: number
   totalTokens: number
+  byModel?: Record<string, Buckets>
 }
 
-function LineChart({ title, rows }: { title: string; rows: ChartRow[] }) {
+/** Stable per-model line colors (indexed by the model list order). */
+const PALETTE = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#14b8a6']
+
+function LineChart({ title, rows, models }: { title: string; rows: ChartRow[]; models: string[] }) {
   const [metric, setMetric] = useState<'cost' | 'tokens'>('cost')
   const [hover, setHover] = useState<number | null>(null)
 
-  const values = rows.map(row => (metric === 'cost' ? row.costCny : row.totalTokens))
-  const max = Math.max(1, ...values)
+  const pick = (row: ChartRow, model: string | undefined): number => {
+    if (model === undefined) return metric === 'cost' ? row.costCny : row.totalTokens
+    const bucket = row.byModel?.[model]
+    if (bucket === undefined) return 0
+    return metric === 'cost' ? bucket.costCny : tokens(bucket)
+  }
+
+  const totalValues = rows.map(row => pick(row, undefined))
+  const series = [
+    { label: '总价', color: 'var(--dsw-alias-brand-primary,#3b82f6)', values: totalValues, total: true },
+    ...models.map((model, index) => ({
+      label: model,
+      color: PALETTE[index % PALETTE.length],
+      values: rows.map(row => pick(row, model)),
+      total: false,
+    })),
+  ]
+  const max = Math.max(1, ...series.flatMap(item => item.values))
   const width = 600
   const height = 150
   const padX = 8
@@ -179,9 +205,9 @@ function LineChart({ title, rows }: { title: string; rows: ChartRow[] }) {
   const step = rows.length > 1 ? (width - padX * 2) / (rows.length - 1) : 0
   const points = rows.map((row, index) => ({
     x: rows.length > 1 ? padX + index * step : width / 2,
-    y: height - padY - (values[index] ?? 0) / max * (height - padY * 2),
+    y: height - padY - (totalValues[index] ?? 0) / max * (height - padY * 2),
     row,
-    value: values[index] ?? 0,
+    value: totalValues[index] ?? 0,
   }))
 
   const onMove = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -192,10 +218,17 @@ function LineChart({ title, rows }: { title: string; rows: ChartRow[] }) {
   }
 
   const hovered = hover === null ? undefined : points[hover]
-  const polyline = points.map(point => `${point.x},${point.y}`).join(' ')
+  const totalPolyline = points.map(point => `${point.x},${point.y}`).join(' ')
   const area = points.length > 0
-    ? `${padX},${height - padY} ${polyline} ${points[points.length - 1]?.x ?? padX},${height - padY}`
+    ? `${padX},${height - padY} ${totalPolyline} ${points[points.length - 1]?.x ?? padX},${height - padY}`
     : ''
+  const lineOf = (values: number[]): string => values
+    .map((value, index) => {
+      const x = rows.length > 1 ? padX + index * step : width / 2
+      const y = height - padY - value / max * (height - padY * 2)
+      return `${x},${y}`
+    })
+    .join(' ')
 
   return (
     <div className="dsh-usage-chart">
@@ -206,11 +239,32 @@ function LineChart({ title, rows }: { title: string; rows: ChartRow[] }) {
           <button type="button" className={metric === 'tokens' ? 'active' : ''} onClick={() => { setMetric('tokens') }}>Token</button>
         </div>
       </div>
+      <div className="dsh-usage-chart-legend">
+        {series.map(item => (
+          <span key={item.label} className={item.total ? 'total' : ''}>
+            <span className="dsh-usage-swatch" style={{ background: item.color }} />
+            {item.label}
+          </span>
+        ))}
+      </div>
       <div className="dsh-usage-chart-box" onMouseMove={onMove} onMouseLeave={() => { setHover(null) }}>
         <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label={`${title}折线图`}>
           <line x1={padX} y1={height - padY} x2={width - padX} y2={height - padY} stroke="var(--dsw-alias-border-l2)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
           <polygon points={area} fill="color-mix(in srgb,var(--dsw-alias-brand-primary,#3b82f6) 12%,transparent)" />
-          <polyline points={polyline} fill="none" stroke="var(--dsw-alias-brand-primary,#3b82f6)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+          {series.map(item => (
+            <polyline
+              key={item.label}
+              points={lineOf(item.values)}
+              fill="none"
+              stroke={item.color}
+              strokeWidth={item.total ? 2.5 : 1.5}
+              strokeDasharray={item.total ? undefined : '4 3'}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+              opacity={item.total ? 1 : 0.9}
+            />
+          ))}
           {hovered !== undefined ? (
             <g>
               <line x1={hovered.x} y1={padY} x2={hovered.x} y2={height - padY} stroke="var(--dsw-alias-label-dimmed)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
@@ -221,7 +275,11 @@ function LineChart({ title, rows }: { title: string; rows: ChartRow[] }) {
         {hovered !== undefined ? (
           <div className="dsh-usage-chart-tip" style={{ left: `${hovered.x / width * 100}%`, top: `${hovered.y / height * 100}%` }}>
             <div>{hovered.row.key}</div>
-            <div>{metric === 'cost' ? fmtCost(hovered.value) : `${fmtTokens(hovered.value)} tokens`}</div>
+            {series.map(item => (
+              <div key={item.label} style={{ color: item.label === '总价' ? undefined : item.color }}>
+                {item.label}: {metric === 'cost' ? fmtCost(item.values[hover as number]) : `${fmtTokens(item.values[hover as number] ?? 0)} tokens`}
+              </div>
+            ))}
           </div>
         ) : null}
       </div>
@@ -317,14 +375,36 @@ function DetailPanel({ status, loading, onClose, onRefresh, anchorLeft, openUp }
         </div>
       </section>
 
+      <section className="dsh-usage-section">
+        <h3>各模型累计花费</h3>
+        <div className="dsh-usage-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)' }}>
+          {usage && usage.models.length > 0
+            ? usage.models.map((model, index) => {
+              const buckets = usage.modelCosts[model]
+              return (
+                <div className="dsh-usage-cell" key={model}>
+                  <span className="dsh-usage-k" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span className="dsh-usage-swatch" style={{ background: PALETTE[index % PALETTE.length] }} />
+                    {model}
+                  </span>
+                  <span className="dsh-usage-v">{fmtCost(buckets?.costCny)}</span>
+                </div>
+              )
+            })
+            : <span className="dsh-usage-hint">暂无数据</span>}
+        </div>
+      </section>
+
       {usage && usage.days.length > 0 ? (
         <section className="dsh-usage-section">
           <LineChart
             title="最近 7 天"
+            models={usage.models}
             rows={usage.days.map(day => ({
               key: day.date,
               costCny: day.buckets.costCny,
               totalTokens: tokens(day.buckets),
+              byModel: day.byModel,
             }))}
           />
         </section>
@@ -334,10 +414,12 @@ function DetailPanel({ status, loading, onClose, onRefresh, anchorLeft, openUp }
         <section className="dsh-usage-section">
           <LineChart
             title="最近 12 个月"
+            models={usage.models}
             rows={usage.months.map(month => ({
               key: month.month,
               costCny: month.buckets.costCny,
               totalTokens: tokens(month.buckets),
+              byModel: month.byModel,
             }))}
           />
         </section>

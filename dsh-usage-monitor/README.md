@@ -6,6 +6,7 @@ DSH API 余额与 token 用量监控插件：前端底部状态栏 + 点击展�
 
 - **底部状态栏**（`shell.overlay`，不占三栏布局）：余额、今日花费、今日输入/输出；默认停靠右下角，**可拖动到界面任意位置**，位置保存在浏览器 `localStorage`，重启后保留；
 - **悬浮详情窗**：点击状态栏展开——余额明细、今日/本周/本月/累计花费、Token 明细、缓存命中率，以及最近 7 天 / 最近 12 个月的**可交互折线图**（花费 / Token 切换、悬停读数）；
+- **按模型拆分**：从 `request/header` 事件跟踪当前模型，usage 按模型分别记账；折线图**每个模型一条线 + 总价一条线**，详情窗另有各模型累计花费列表；
 - **花费记账**：按官方 deepseek-v4-pro 价格估算并随 2026-08-17 峰谷价自动切换（北京时间 9–12 / 14–18 为高峰），费率字段见下方配置；
 - **token 记账**：监听 durable session 事件的 `assistant/chunk usage` / `assistant/message usage`，同一步骤后到的 usage 替换先到的（不双计）；按本地日期写入 `$DSH_HOME/usage-monitor/state.json`；
 - **缓存命中**：沿用 DSH token-meter 口径 `cacheRead / (uncachedInput + cacheRead + cacheWrite)`；
