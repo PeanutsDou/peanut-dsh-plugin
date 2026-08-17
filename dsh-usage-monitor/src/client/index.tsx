@@ -30,7 +30,9 @@ interface StatusData {
   generatedAt: number
   sysinfo?: {
     memPercent: number
+    memTotalGb: number
     cpuPercent: number
+    cpuCores: number
     gpu: { utilPercent: number; memUsedMb: number; memTotalMb: number } | null
     at: number
   }
@@ -595,11 +597,11 @@ function UsageMonitor(): JSX.Element {
   const sysText = sysinfo === undefined
     ? ''
     : [
-      `内存 ${Math.round(sysinfo.memPercent)}%`,
-      `CPU ${Math.round(sysinfo.cpuPercent)}%`,
+      `内存 ${Math.round(sysinfo.memPercent)}%/${sysinfo.memTotalGb}G`,
+      `CPU ${Math.round(sysinfo.cpuPercent)}%/${sysinfo.cpuCores}核`,
       sysinfo.gpu === null
         ? null
-        : `GPU ${Math.round(sysinfo.gpu.utilPercent)}% ${(sysinfo.gpu.memUsedMb / 1024).toFixed(1)}/${(sysinfo.gpu.memTotalMb / 1024).toFixed(1)}GB`,
+        : `GPU ${Math.round(sysinfo.gpu.utilPercent)}%/${(sysinfo.gpu.memTotalMb / 1024).toFixed(0)}G`,
     ].filter((part): part is string => part !== null).join(' · ')
 
   const rect = barRef.current?.getBoundingClientRect()

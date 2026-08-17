@@ -136,7 +136,11 @@ export interface BalanceSnapshot {
 /** Live machine state sampled by the host: memory / CPU / NVIDIA GPU. */
 export interface SysInfoSnapshot {
   memPercent: number
+  /** Total physical memory in GB (rounded), e.g. 48. */
+  memTotalGb: number
   cpuPercent: number
+  /** Logical CPU core count, e.g. 16. */
+  cpuCores: number
   gpu: { utilPercent: number; memUsedMb: number; memTotalMb: number } | null
   at: number
 }
@@ -205,12 +209,13 @@ export function createSysSampler(): { sample: () => Promise<SysInfoSnapshot> } {
       const totalMem = os.totalmem()
       const freeMem = os.freemem()
       const memPercent = totalMem === 0 ? 0 : Math.round((1 - freeMem / totalMem) * 1000) / 10
+      const memTotalGb = Math.round(totalMem / (1024 * 1024 * 1024))
       // GPU polls spawn a process: refresh at most once per 5 seconds.
       if (gpuCache === undefined || Date.now() - gpuAt > 5000) {
         gpuCache = await readNvidiaGpu()
         gpuAt = Date.now()
       }
-      return { memPercent, cpuPercent, gpu: gpuCache ?? null, at: Date.now() }
+      return { memPercent, memTotalGb, cpuPercent, cpuCores: os.cpus().length, gpu: gpuCache ?? null, at: Date.now() }
     },
   }
 }
