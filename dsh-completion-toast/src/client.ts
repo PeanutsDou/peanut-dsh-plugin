@@ -1,37 +1,41 @@
 /**
  * dsh-completion-toast — client half.
  *
- * Reports whether the DSH page is currently hidden/minimized so the host only
- * pops completion notifications while the user is not looking at the window.
+ * Watches the session list's `running` bit. When a session flips
+ * running→idle while the DSH page is hidden/minimized, asks the host to show
+ * a Windows completion notification for that session.
  */
 
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 
 export const name = 'dsh-completion-toast-client'
-export const inject: string[] = []
-
-function sendHidden(hidden: boolean): void {
-  fetch(`/plugins/dsh-completion-toast/visibility?hidden=${hidden ? '1' : '0'}`, {
-    method: 'POST',
-    cache: 'no-store',
-  }).catch(() => { /* transient */ })
-}
+export const inject: string[] = ['sessions']
 
 export function apply(ctx: ClientContext): void {
-  ctx.effect(() => {
-    const onVisibility = () => sendHidden(document.hidden || document.visibilityState === 'hidden')
-    const onBlur = () => sendHidden(true)
-    const onFocus = () => sendHidden(false)
+  const sessions = ctx.sessions
+  if (sessions === undefined) return
 
-    document.addEventListener('visibilitychange', onVisibility)
-    window.addEventListener('blur', onBlur)
-    window.addEventListener('focus', onFocus)
-    sendHidden(document.hidden || document.visibilityState === 'hidden')
+  const prevRunning = new Map<string, boolean>()
 
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility)
-      window.removeEventListener('blur', onBlur)
-      window.removeEventListener('focus', onFocus)
+  const check = () => {
+    const snapshot = sessions.list.getSnapshot()
+    const hidden = document.hidden || document.visibilityState === 'hidden'
+    for (const [id, summary] of Object.entries(snapshot.byId)) {
+      const wasRunning = prevRunning.get(id) ?? false
+      const isRunning = summary.running
+      if (wasRunning && !isRunning && hidden) {
+        fetch(`/plugins/dsh-completion-toast/notify?sessionId=${encodeURIComponent(id)}`, {
+          method: 'POST',
+          cache: 'no-store',
+        }).catch(() => { /* transient */ })
+      }
+      prevRunning.set(id, isRunning)
     }
-  }, 'dsh-completion-toast: visibility reporter')
+  }
+
+  ctx.effect(() => {
+    const unsubscribe = sessions.list.subscribe(check)
+    check()
+    return unsubscribe
+  }, 'dsh-completion-toast: completion edge reporter')
 }

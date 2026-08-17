@@ -81,7 +81,6 @@ function showWindowsNotification(title: string, message: string): void {
 
 export function apply(ctx: Context): void {
   let hidden = false
-  const activeSessions = new Set<string>()
   const sessionMeta = new Map<string, SessionMeta>()
 
   ctx.on('session/event', (rawSession: unknown, rawEvent: unknown) => {
@@ -116,28 +115,34 @@ export function apply(ctx: Context): void {
     }
   })
 
-  ctx.on('agent/status', (payload: { agent?: { id?: unknown }; status?: unknown }) => {
-    const agent = payload.agent
-    const id = typeof agent?.id === 'string' ? agent.id : undefined
-    const status = payload.status
-    if (id === undefined) return
-
-    if (status === 'running') {
-      activeSessions.add(id)
-      return
-    }
-
-    if (status === 'idle' && activeSessions.delete(id) && hidden) {
-      const meta = sessionMeta.get(id) ?? {}
-      const title = meta.title ?? '未命名会话'
-      const summary = meta.lastPrompt !== undefined ? `：${truncate(meta.lastPrompt, 80)}` : ''
-      showWindowsNotification('DeepSeek Harness', `会话「${title}」任务完成${summary}`)
-    }
-  })
+  function notifySession(sessionId: string): void {
+    const meta = sessionMeta.get(sessionId) ?? {}
+    const title = meta.title ?? '未命名会话'
+    const summary = meta.lastPrompt !== undefined ? `：${truncate(meta.lastPrompt, 80)}` : ''
+    showWindowsNotification('DeepSeek Harness', `会话「${title}」任务完成${summary}`)
+  }
 
   const webServer = ctx.get('webServer') as { register: (route: WebRoute) => () => void } | undefined
   if (webServer !== undefined) {
     ctx.effect(() => {
+      const disposeNotify = webServer.register({
+        kind: 'exact',
+        path: '/plugins/dsh-completion-toast/notify',
+        handler: async (req: HttpRequest, res: HttpResponse) => {
+          if ((req.method ?? 'GET') !== 'POST') {
+            res.writeHead(405, { allow: 'POST' })
+            res.end('method not allowed')
+            return
+          }
+          try {
+            const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+            const sessionId = url.searchParams.get('sessionId') ?? ''
+            if (sessionId !== '') notifySession(sessionId)
+          } catch { /* ignore */ }
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ ok: true }))
+        },
+      })
       const dispose = webServer.register({
         kind: 'exact',
         path: '/plugins/dsh-completion-toast/visibility',
@@ -157,7 +162,10 @@ export function apply(ctx: Context): void {
           res.end(JSON.stringify({ ok: true, hidden }))
         },
       })
-      return dispose
-    }, 'dsh-completion-toast: visibility route')
+      return () => {
+        disposeNotify()
+        dispose()
+      }
+    }, 'dsh-completion-toast: routes')
   }
 }
