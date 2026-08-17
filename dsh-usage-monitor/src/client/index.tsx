@@ -79,8 +79,9 @@ function ensureStyles(): void {
   style.id = id
   style.textContent = `
 .dsh-usage-dock{position:fixed;z-index:1200;display:flex;flex-direction:column;align-items:flex-end;pointer-events:none}
-.dsh-usage-bar{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:10px;max-width:min(92vw,640px);padding:6px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 92%,transparent);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;box-shadow:0 8px 30px rgba(0,0,0,.18);cursor:grab;pointer-events:auto;touch-action:none;backdrop-filter:blur(8px);user-select:none}
-.dsh-usage-bar-sys{flex-basis:100%;display:flex;justify-content:center;gap:12px;margin-top:1px;font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+.dsh-usage-bar{position:relative;display:flex;flex-direction:column;align-items:center;gap:2px;max-width:min(92vw,640px);padding:6px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 92%,transparent);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;box-shadow:0 8px 30px rgba(0,0,0,.18);cursor:grab;pointer-events:auto;touch-action:none;backdrop-filter:blur(8px);user-select:none}
+.dsh-usage-bar-row{display:flex;align-items:center;gap:10px;min-width:0;white-space:nowrap}
+.dsh-usage-bar-sys{display:flex;justify-content:center;gap:12px;font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
 .dsh-usage-bar.dragging{cursor:grabbing;border-color:var(--dsw-alias-brand-primary)}
 .dsh-usage-bar:hover{border-color:var(--dsw-alias-label-dimmed)}
 .dsh-usage-bar:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
@@ -637,10 +638,12 @@ function UsageMonitor(): JSX.Element {
           setOpen(current => !current)
         }}
       >
-        <span className={balance?.ok === false ? 'dsh-usage-dot err' : 'dsh-usage-dot'} />
-        <span className="dsh-usage-bar-parts">{balanceText}</span>
-        {todayCostText ? <span className="dsh-usage-bar-parts">{todayCostText}</span> : null}
-        <span className="dsh-usage-bar-parts">{todayText}</span>
+        <span className="dsh-usage-bar-row">
+          <span className={balance?.ok === false ? 'dsh-usage-dot err' : 'dsh-usage-dot'} />
+          <span className="dsh-usage-bar-parts">{balanceText}</span>
+          {todayCostText ? <span className="dsh-usage-bar-parts">{todayCostText}</span> : null}
+          <span className="dsh-usage-bar-parts">{todayText}</span>
+        </span>
         {sysText ? <span className="dsh-usage-bar-sys">{sysText}</span> : null}
       </button>
     </div>
