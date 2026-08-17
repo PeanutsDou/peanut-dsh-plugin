@@ -34,7 +34,7 @@ interface ClientSettingsStore {
 }
 
 const clientSettingsStore: ClientSettingsStore = {
-  current: { turnFoldEnabled: true, turnRailEnabled: true },
+  current: { turnFoldEnabled: true, turnRailEnabled: false },
   listeners: new Set<() => void>(),
   getSnapshot(): TurnUiClientSettings {
     return this.current
