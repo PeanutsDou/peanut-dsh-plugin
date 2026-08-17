@@ -22,7 +22,6 @@ type RailProps = PropsRuntime<'conversation.session.header.utilities'>
 
 interface TurnUiClientSettings {
   turnFoldEnabled: boolean
-  turnRailEnabled: boolean
 }
 
 interface ClientSettingsStore {
@@ -34,7 +33,7 @@ interface ClientSettingsStore {
 }
 
 const clientSettingsStore: ClientSettingsStore = {
-  current: { turnFoldEnabled: true, turnRailEnabled: false },
+  current: { turnFoldEnabled: true },
   listeners: new Set<() => void>(),
   getSnapshot(): TurnUiClientSettings {
     return this.current
@@ -44,7 +43,7 @@ const clientSettingsStore: ClientSettingsStore = {
     return () => { this.listeners.delete(listener) }
   },
   set(next: TurnUiClientSettings): void {
-    if (next.turnFoldEnabled === this.current.turnFoldEnabled && next.turnRailEnabled === this.current.turnRailEnabled) return
+    if (next.turnFoldEnabled === this.current.turnFoldEnabled) return
     this.current = next
     for (const listener of this.listeners) listener()
   },
@@ -57,16 +56,6 @@ function subscribeClientSettings(listener: () => void): () => void {
 function getClientSettingsSnapshot(): TurnUiClientSettings {
   return clientSettingsStore.getSnapshot()
 }
-
-interface RailFrame {
-  left: number
-  top: number
-  height: number
-}
-
-const RAIL_WIDTH = 10
-const RAIL_HOVER_WIDTH = 24
-const TOP_OFFSET = 64
 
 function scrollport(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[data-conversation-scroll]')
@@ -453,228 +442,6 @@ function TurnFoldAdapter({ useSession, sessionId }: RailProps) {
   return null
 }
 
-function extractTurnSummary(node: unknown): string | undefined {
-  if (node === null || typeof node !== 'object') return undefined
-  const record = node as { kind?: unknown; data?: { content?: unknown } }
-  if (record.kind !== 'user') return undefined
-  const content = record.data?.content
-  if (!Array.isArray(content)) return undefined
-  for (const block of content) {
-    if (block === null || typeof block !== 'object') continue
-    const item = block as { type?: unknown; text?: unknown }
-    if (item.type === 'text' && typeof item.text === 'string') {
-      const text = item.text.replace(/\s+/g, ' ').trim()
-      if (text !== '') return text.length > 70 ? text.slice(0, 70) + '…' : text
-    }
-  }
-  return undefined
-}
-
-function buildTurnSummaries(chat: unknown, turnOrder: readonly number[]): ReadonlyMap<number, string> {
-  const summaries = new Map<number, string>()
-  const snapshot = chat as {
-    locations?: { getTurn?: (turn: number) => readonly string[] | undefined }
-    nodes?: { get?: (key: string) => unknown }
-  }
-  for (const turn of turnOrder) {
-    const keys = snapshot.locations?.getTurn?.(turn) ?? []
-    for (const key of keys) {
-      const summary = extractTurnSummary(snapshot.nodes?.get?.(key))
-      if (summary !== undefined) {
-        summaries.set(turn, summary)
-        break
-      }
-    }
-  }
-  return summaries
-}
-
-function TurnRail({ useSession, sessionId }: RailProps) {
-  const settings = useSyncExternalStore(subscribeClientSettings, getClientSettingsSnapshot)
-  const timeline = useSession(snapshot => snapshot.chat.timeline)
-  const chat = useSession(snapshot => snapshot.chat)
-  const turnOrder = timeline.turnOrder
-  const [frame, setFrame] = useState<RailFrame | null>(null)
-  const [activeTurn, setActiveTurn] = useState<number | null>(turnOrder[0] ?? null)
-  const [hoverTurn, setHoverTurn] = useState<number | null>(null)
-  const [hoverTop, setHoverTop] = useState<number | null>(null)
-  const trackRef = useRef<HTMLDivElement | null>(null)
-
-  const orderKey = useMemo(() => turnOrder.join(','), [turnOrder])
-  const turnSummaries = useMemo(() => buildTurnSummaries(chat, turnOrder), [chat, orderKey])
-
-  useEffect(() => {
-    ensureStyles()
-    let observer: MutationObserver | undefined
-    let observedOutlet: HTMLElement | null = null
-    let frame = 0
-    const updateFrame = () => {
-      const port = scrollport()
-      if (port === null || chatFlow(port) === null) {
-        // The rail is chat-only: keep it off trajectory/schedule/… views.
-        setFrame(null)
-        return
-      }
-      const rect = port.getBoundingClientRect()
-      setFrame(current => {
-        const next = { left: rect.left, top: rect.top, height: rect.height }
-        if (current !== null
-          && Math.abs(current.left - next.left) < 0.5
-          && Math.abs(current.top - next.top) < 0.5
-          && Math.abs(current.height - next.height) < 0.5) return current
-        return next
-      })
-    }
-    const schedule = (): void => {
-      cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(updateFrame)
-    }
-    const attach = (port: HTMLElement): void => {
-      const outlet = port.querySelector<HTMLElement>('[data-slot="conversation.view"]')
-      if (outlet === null || observedOutlet === outlet) return
-      observer?.disconnect()
-      observedOutlet = outlet
-      observer = new MutationObserver(schedule)
-      // The slot outlet's direct child is the active view root. Observing only
-      // direct childList means a tab swap remounts it and hides the rail
-      // immediately, while streaming token updates INSIDE ChatView never fire
-      // this observer (they used to, forcing a per-frame layout read).
-      observer.observe(outlet, { childList: true })
-    }
-    updateFrame()
-    const port = scrollport()
-    if (port !== null) {
-      port.addEventListener('scroll', updateFrame, { passive: true })
-      attach(port)
-    }
-    window.addEventListener('resize', updateFrame)
-    const interval = setInterval(() => {
-      const currentPort = scrollport()
-      if (currentPort === null) {
-        setFrame(null)
-        return
-      }
-      attach(currentPort)
-      updateFrame()
-    }, 500)
-    return () => {
-      cancelAnimationFrame(frame)
-      port?.removeEventListener('scroll', updateFrame)
-      window.removeEventListener('resize', updateFrame)
-      clearInterval(interval)
-      observer?.disconnect()
-    }
-  }, [sessionId])
-
-  useEffect(() => {
-    let frame = 0
-    const updateActive = () => {
-      cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(() => {
-        const port = scrollport()
-        if (port === null) return
-        const portRect = port.getBoundingClientRect()
-        let current = turnOrder[0] ?? null
-        for (const turn of turnOrder) {
-          const anchor = port.querySelector<HTMLElement>(`[data-turn-start="${turn}"]`)
-            ?? port.querySelector<HTMLElement>(`[data-turn-tail="${turn}"]`)
-          if (anchor === null) continue
-          const flowTop = anchor.getBoundingClientRect().top - portRect.top + port.scrollTop
-          if (flowTop <= port.scrollTop + TOP_OFFSET) current = turn
-          else break
-        }
-        // The running turn has no turn-tail yet: while the reader is pinned at
-        // the bottom, treat the newest turn as the visible one.
-        if (port.scrollTop + port.clientHeight >= port.scrollHeight - 24) {
-          current = turnOrder[turnOrder.length - 1] ?? current
-        }
-        setActiveTurn(current)
-      })
-    }
-    updateActive()
-    const port = scrollport()
-    port?.addEventListener('scroll', updateActive, { passive: true })
-    const observer = typeof MutationObserver === 'undefined' ? undefined : new MutationObserver(updateActive)
-    if (port !== null) observer?.observe(port, { childList: true, subtree: true })
-    return () => {
-      cancelAnimationFrame(frame)
-      port?.removeEventListener('scroll', updateActive)
-      observer?.disconnect()
-    }
-  }, [orderKey])
-
-  if (!settings.turnRailEnabled || turnOrder.length < 2 || frame === null || frame.height <= 0) return null
-
-  const jumpTo = (turn: number): void => {
-    const port = scrollport()
-    if (port === null) return
-    const anchor = port.querySelector<HTMLElement>(`[data-turn-start="${turn}"]`)
-      ?? port.querySelector<HTMLElement>(`[data-turn-tail="${turn}"]`)
-    if (anchor !== null) {
-      anchor.scrollIntoView({ block: 'start', behavior: 'smooth' })
-      return
-    }
-    const index = turnOrder.indexOf(turn)
-    if (index < 0) return
-    const ratio = turnOrder.length > 1 ? index / (turnOrder.length - 1) : 0
-    port.scrollTop = ratio * Math.max(0, port.scrollHeight - port.clientHeight)
-  }
-
-  const updateHoverTop = (turn: number, button?: HTMLButtonElement | null): void => {
-    if (button === undefined || button === null) return
-    const track = trackRef.current
-    setHoverTop(button.offsetTop - (track?.scrollTop ?? 0) + button.offsetHeight / 2)
-  }
-
-  const updateHoverFromTrackScroll = (): void => {
-    if (hoverTurn === null) return
-    const button = trackRef.current?.querySelector<HTMLButtonElement>(`[data-turn="${hoverTurn}"]`)
-    updateHoverTop(hoverTurn, button ?? null)
-  }
-
-  return createPortal(
-    <div className="dsh-turn-rail" style={{ left: frame.left, top: frame.top, height: frame.height }} aria-hidden="false">
-      <div ref={trackRef} className="dsh-turn-rail-track" onScroll={updateHoverFromTrackScroll}>
-        {turnOrder.map(turn => {
-          const running = timeline.turns.get(turn)?.status === 'open'
-          return (
-            <button
-              key={turn}
-              type="button"
-              data-turn={turn}
-              className={`dsh-turn-slot${turn === activeTurn ? ' active' : ''}${running ? ' running' : ''}`}
-              aria-label={`跳转到第 ${turn + 1} 轮`}
-              onClick={() => { jumpTo(turn) }}
-              onMouseEnter={event => {
-                setHoverTurn(turn)
-                updateHoverTop(turn, event.currentTarget)
-              }}
-              onMouseLeave={() => {
-                setHoverTurn(null)
-                setHoverTop(null)
-              }}
-            >
-              <span className="dsh-turn-bar-inner" />
-            </button>
-          )
-        })}
-      </div>
-      {hoverTurn !== null && hoverTop !== null ? (
-        <div className="dsh-turn-rail-tip" style={{ top: hoverTop }}>
-          <span className="dsh-turn-rail-tip-title">
-            第 {hoverTurn + 1} 轮
-            {timeline.turns.get(hoverTurn)?.status === 'open' ? ' · 运行中' : ''}
-          </span>
-          <span className="dsh-turn-rail-tip-summary">
-            {turnSummaries.get(hoverTurn) ?? '（无文字摘要）'}
-          </span>
-        </div>
-      ) : null}
-    </div>,
-    document.body,
-  )
-}
-
 function TurnUiSettingsCard(props: {
   useTurnUi: <R>(selector: (snapshot: TurnUiClientSettings) => R) => R
   set: (field: string, value: unknown) => void
@@ -684,9 +451,9 @@ function TurnUiSettingsCard(props: {
   return (
     <li className="dsh-turn-ui-card">
       <button type="button" className="dsh-turn-ui-card-header" aria-expanded={open} onClick={() => { setOpen(!open) }}>
-        <span>轮次导航条</span>
+        <span>轮次折叠容器</span>
         <div style={{ marginTop: 4, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>
-          在聊天区左侧显示可点击跳转的轮次短横杠
+          把工具调用 / 步骤等过程输出折叠成容器卡片
         </div>
       </button>
       {open ? (
@@ -695,11 +462,7 @@ function TurnUiSettingsCard(props: {
             <input type="checkbox" checked={settings.turnFoldEnabled} onChange={event => { props.set('turnFoldEnabled', event.currentTarget.checked) }} />
             按轮折叠过程输出（上下文注入 / 思考 / 工具 / 产物）
           </label>
-          <label className="dsh-turn-ui-toggle">
-            <input type="checkbox" checked={settings.turnRailEnabled} onChange={event => { props.set('turnRailEnabled', event.currentTarget.checked) }} />
-            显示左侧轮次导航条
-          </label>
-        </div>
+                  </div>
       ) : null}
     </li>
   )
@@ -714,23 +477,15 @@ export function apply(ctx: ClientContext): void {
       const value = (snap.value ?? {}) as Record<string, unknown>
       const next: TurnUiClientSettings = {
         turnFoldEnabled: value.turnFoldEnabled !== false,
-        turnRailEnabled: value.turnRailEnabled !== false,
       }
       clientSettingsStore.set(next)
       document.documentElement.dataset.turnFoldDisabled = next.turnFoldEnabled ? '0' : '1'
-      document.documentElement.dataset.turnRailDisabled = next.turnRailEnabled ? '0' : '1'
     }
     updateSettings()
     settingsScope.subscribe(updateSettings)
   } catch (error) {
     console.error('[dsh-turn-ui] settings scope unavailable:', error)
   }
-
-  ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
-    name: 'conversation.session.header.utilities',
-    id: 'dsh-turn-rail',
-    order: 0,
-  }, TurnRail))
 
   ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
     name: 'conversation.session.header.utilities',
