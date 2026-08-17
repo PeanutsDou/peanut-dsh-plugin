@@ -1,5 +1,0 @@
-# dsh-turn-ui bundle patch —— host 半为空壳；client 半经 dsh.client 清单被发现。
-- insert:
-    - id: dsh-turn-ui
-      name: '@peanutsdou/dsh-turn-ui'
-      config: {}
