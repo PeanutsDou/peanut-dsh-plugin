@@ -28,6 +28,12 @@ interface Buckets {
 interface StatusData {
   ok: boolean
   generatedAt: number
+  sysinfo?: {
+    memPercent: number
+    cpuPercent: number
+    gpu: { utilPercent: number; memUsedMb: number; memTotalMb: number } | null
+    at: number
+  }
   balance: {
     ok: boolean
     available?: boolean
@@ -73,7 +79,8 @@ function ensureStyles(): void {
   style.id = id
   style.textContent = `
 .dsh-usage-dock{position:fixed;z-index:1200;display:flex;flex-direction:column;align-items:flex-end;pointer-events:none}
-.dsh-usage-bar{position:relative;display:flex;align-items:center;gap:10px;max-width:min(92vw,640px);padding:6px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 92%,transparent);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;box-shadow:0 8px 30px rgba(0,0,0,.18);cursor:grab;pointer-events:auto;touch-action:none;backdrop-filter:blur(8px);user-select:none}
+.dsh-usage-bar{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:10px;max-width:min(92vw,640px);padding:6px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 92%,transparent);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;box-shadow:0 8px 30px rgba(0,0,0,.18);cursor:grab;pointer-events:auto;touch-action:none;backdrop-filter:blur(8px);user-select:none}
+.dsh-usage-bar-sys{flex-basis:100%;display:flex;justify-content:center;gap:12px;margin-top:1px;font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
 .dsh-usage-bar.dragging{cursor:grabbing;border-color:var(--dsw-alias-brand-primary)}
 .dsh-usage-bar:hover{border-color:var(--dsw-alias-label-dimmed)}
 .dsh-usage-bar:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
@@ -583,6 +590,16 @@ function UsageMonitor(): JSX.Element {
     : '余额 —'
   const todayText = usage ? `今日 ${fmtTokens(billedInput(usage.today))} in / ${fmtTokens(usage.today.outputTokens)} out` : '用量加载中'
   const todayCostText = usage ? `今日花费 ${fmtCost(usage.todayCost)}` : ''
+  const sysinfo = status?.sysinfo
+  const sysText = sysinfo === undefined
+    ? ''
+    : [
+      `内存 ${Math.round(sysinfo.memPercent)}%`,
+      `CPU ${Math.round(sysinfo.cpuPercent)}%`,
+      sysinfo.gpu === null
+        ? null
+        : `GPU ${Math.round(sysinfo.gpu.utilPercent)}% ${(sysinfo.gpu.memUsedMb / 1024).toFixed(1)}/${(sysinfo.gpu.memTotalMb / 1024).toFixed(1)}GB`,
+    ].filter((part): part is string => part !== null).join(' · ')
 
   const rect = barRef.current?.getBoundingClientRect()
   const anchorLeft = rect === undefined ? false : rect.left + rect.width / 2 < window.innerWidth / 2
@@ -624,6 +641,7 @@ function UsageMonitor(): JSX.Element {
         <span className="dsh-usage-bar-parts">{balanceText}</span>
         {todayCostText ? <span className="dsh-usage-bar-parts">{todayCostText}</span> : null}
         <span className="dsh-usage-bar-parts">{todayText}</span>
+        {sysText ? <span className="dsh-usage-bar-sys">{sysText}</span> : null}
       </button>
     </div>
   )

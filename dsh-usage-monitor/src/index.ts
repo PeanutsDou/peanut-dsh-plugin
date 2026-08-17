@@ -18,6 +18,7 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-session'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
+import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -130,6 +131,88 @@ export interface BalanceSnapshot {
   toppedUp?: number
   fetchedAt: number
   error?: string
+}
+
+/** Live machine state sampled by the host: memory / CPU / NVIDIA GPU. */
+export interface SysInfoSnapshot {
+  memPercent: number
+  cpuPercent: number
+  gpu: { utilPercent: number; memUsedMb: number; memTotalMb: number } | null
+  at: number
+}
+
+/** Per-core [idleMs, totalMs] snapshot for CPU-usage delta math. */
+type CpuSample = Array<[number, number]>
+
+function readCpuSample(): CpuSample {
+  return os.cpus().map(core => {
+    const t = core.times
+    const total = t.user + t.nice + t.sys + t.idle + t.irq
+    return [t.idle, total]
+  })
+}
+
+function cpuUsagePercent(prev: CpuSample, cur: CpuSample): number {
+  if (prev.length === 0 || prev.length !== cur.length) return 0
+  let idleDelta = 0
+  let totalDelta = 0
+  for (let i = 0; i < cur.length; i++) {
+    const before = prev[i]
+    const after = cur[i]
+    if (before === undefined || after === undefined) continue
+    idleDelta += Math.max(0, after[0] - before[0])
+    totalDelta += Math.max(0, after[1] - before[1])
+  }
+  if (totalDelta <= 0) return 0
+  return Math.round((1 - idleDelta / totalDelta) * 1000) / 10
+}
+
+/** Parse the first `nvidia-smi --format=csv,noheader,nounits` line. */
+export function parseNvidiaSmi(line: string): { utilPercent: number; memUsedMb: number; memTotalMb: number } | null {
+  const parts = line.split(',').map(part => Number(part.trim()))
+  if (parts.length < 3 || parts.some(part => !Number.isFinite(part))) return null
+  const [utilPercent, memUsedMb, memTotalMb] = parts
+  if (utilPercent === undefined || memUsedMb === undefined || memTotalMb === undefined) return null
+  return { utilPercent, memUsedMb, memTotalMb }
+}
+
+function readNvidiaGpu(): Promise<{ utilPercent: number; memUsedMb: number; memTotalMb: number } | null> {
+  return new Promise(resolve => {
+    execFile('nvidia-smi', ['--query-gpu=utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'], {
+      timeout: 3000,
+      windowsHide: true,
+    }, (error, stdout) => {
+      if (error) {
+        resolve(null)
+        return
+      }
+      const line = String(stdout).split(/\r?\n/).map(line => line.trim()).find(line => line !== '')
+      resolve(line === undefined ? null : parseNvidiaSmi(line))
+    })
+  })
+}
+
+/** Build one machine-state sampler; call `sample()` before every read. */
+export function createSysSampler(): { sample: () => Promise<SysInfoSnapshot> } {
+  let prevCpu = readCpuSample()
+  let gpuCache: SysInfoSnapshot['gpu'] | undefined
+  let gpuAt = 0
+  return {
+    async sample(): Promise<SysInfoSnapshot> {
+      const curCpu = readCpuSample()
+      const cpuPercent = cpuUsagePercent(prevCpu, curCpu)
+      prevCpu = curCpu
+      const totalMem = os.totalmem()
+      const freeMem = os.freemem()
+      const memPercent = totalMem === 0 ? 0 : Math.round((1 - freeMem / totalMem) * 1000) / 10
+      // GPU polls spawn a process: refresh at most once per 5 seconds.
+      if (gpuCache === undefined || Date.now() - gpuAt > 5000) {
+        gpuCache = await readNvidiaGpu()
+        gpuAt = Date.now()
+      }
+      return { memPercent, cpuPercent, gpu: gpuCache ?? null, at: Date.now() }
+    },
+  }
 }
 
 /** Parse DeepSeek /user/balance payload; exported for tests. */
@@ -554,6 +637,7 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
   let balance: BalanceSnapshot = { ok: false, fetchedAt: 0, error: 'not fetched yet' }
   let balanceInFlight: Promise<BalanceSnapshot> | undefined
   let pollTimer: NodeJS.Timeout | undefined
+  const sysSampler = createSysSampler()
 
   const staticConfig: UsageMonitorConfig = { ...DEFAULT_CONFIG, ...(config ?? {}) }
   let resolveConfig: () => UsageMonitorConfig = () => staticConfig
@@ -690,7 +774,7 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
   void refreshBalance()
   scheduleBalancePoll()
 
-  const buildStatus = () => {
+  const buildStatus = async () => {
     const now = new Date()
     const today = ledger.days[localDayKey(now)] ?? zeroBuckets()
     const month = ledger.months[localMonthKey(now)] ?? zeroBuckets()
@@ -703,6 +787,7 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
       ok: true,
       generatedAt: now.getTime(),
       balance,
+      sysinfo: await sysSampler.sample(),
       usage: {
         today,
         month,
@@ -728,12 +813,12 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
       const disposeStatus = webServer.register({
         kind: 'exact',
         path: '/plugins/dsh-usage-monitor/status',
-        handler: (_req: HttpRequest, res: HttpResponse) => {
+        handler: async (_req: HttpRequest, res: HttpResponse) => {
           res.writeHead(200, {
             'content-type': 'application/json; charset=utf-8',
             'cache-control': 'no-store',
           })
-          res.end(JSON.stringify(buildStatus()))
+          res.end(JSON.stringify(await buildStatus()))
         },
       })
       const disposeRefresh = webServer.register({
@@ -750,7 +835,7 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
             'content-type': 'application/json; charset=utf-8',
             'cache-control': 'no-store',
           })
-          res.end(JSON.stringify(buildStatus()))
+          res.end(JSON.stringify(await buildStatus()))
         },
       })
       return () => {
