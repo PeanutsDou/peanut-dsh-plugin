@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createRoot, type Root } from 'react-dom/client'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from '../context-types.ts'
-import { api, type StartResult, type TutorEffort, type TutorMessage, type TutorMode } from './api.ts'
+import { api, type StartResult, type TutorBlock, type TutorEffort, type TutorMessage, type TutorMode } from './api.ts'
 
 export const name = 'dsh-selection-tutor-client'
 export const inject = ['sessions', 'slots']
@@ -84,7 +84,7 @@ function ensureStyles(): void {
 .dsh-tutor-msg.assistant{align-self:flex-start;background:var(--dsw-alias-bg-layer-3,#2a2e38);border:1px solid var(--dsw-alias-border-l2,#3a3f4b)}
 .dsh-tutor-msg.reasoning{color:var(--dsw-alias-label-tertiary,#9aa2b1);font-size:12px;white-space:pre-wrap}
 .dsh-tutor-empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#9aa2b1)}
-.dsh-tutor-error{margin:0 12px 8px;padding:7px 10px;border-radius:8px;background:color-mix(in srgb,var(--dsw-alias-label-error,#ef4444) 14%,transparent);color:var(--dsw-alias-label-error,#ef4444);font-size:12px}
+ .dsh-tutor-tool{margin:2px 0;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:8px;padding:4px 8px;background:var(--dsw-alias-bg-layer-2,#1e2128);font-size:12px}.dsh-tutor-tool summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}.dsh-tutor-tool pre{margin:6px 0 0;padding:6px;border-radius:6px;background:var(--dsw-alias-bg-layer-3,#2a2e38);white-space:pre-wrap;overflow:auto;max-height:160px}.dsh-tutor-error{margin:0 12px 8px;padding:7px 10px;border-radius:8px;background:color-mix(in srgb,var(--dsw-alias-label-error,#ef4444) 14%,transparent);color:var(--dsw-alias-label-error,#ef4444);font-size:12px}
 .dsh-tutor-composer{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--dsw-alias-border-l2,#3a3f4b)}
 .dsh-tutor-composer textarea{flex:1;resize:none;height:56px;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:10px;padding:8px 10px;background:var(--dsw-alias-bg-layer-2,#1e2128);color:inherit;font:inherit;line-height:1.5}
 .dsh-tutor-actions{display:flex;flex-direction:column;gap:6px}
@@ -194,7 +194,7 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
   const [position, setPosition] = useState<WindowPosition>(() => readPosition())
   const [messages, setMessages] = useState<TutorMessage[]>([])
   const [draft, setDraft] = useState('')
-  const [running, setRunning] = useState(true)
+  const [running, setRunning] = useState(win.autoSend)
   const [effort, setEffort] = useState<TutorEffort>(win.reasoningEffort)
   const [error, setError] = useState<string | null>(null)
   const [closing, setClosing] = useState(false)
@@ -217,7 +217,7 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
 
   useEffect(() => {
     void refresh()
-    const timer = window.setInterval(() => { void refresh() }, 1500)
+    const timer = window.setInterval(() => { void refresh() }, 700)
     return () => { window.clearInterval(timer) }
   }, [refresh])
 
@@ -356,16 +356,24 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
         {running ? <span>生成中…</span> : null}
       </div>
       <div className="dsh-tutor-messages" ref={scrollRef}>
-        {messages.length === 0 ? <div className="dsh-tutor-empty">正在准备临时会话…</div> : null}
+        {messages.length === 0 ? <div className="dsh-tutor-empty">{win.autoSend ? '正在准备临时会话…' : '小窗已就绪，请基于选中的内容提问。'}</div> : null}
         {messages.map((message, index) => (
           <div key={`${message.role}-${index}`} className={`dsh-tutor-msg ${message.role}`}>
-            {message.blocks.map((block, blockIndex) => block.type === 'reasoning' ? (
-              <div key={blockIndex} className="dsh-tutor-msg reasoning">{block.text}</div>
-            ) : message.role === 'assistant' ? (
-              <div key={blockIndex}><MarkdownText text={block.text} /></div>
-            ) : (
-              <div key={blockIndex} style={{ whiteSpace: 'pre-wrap' }}>{block.text}</div>
-            ))}
+            {message.blocks.map((block, blockIndex) => {
+              if (block.type === 'reasoning') return <div key={blockIndex} className="dsh-tutor-msg reasoning">{block.text}</div>
+              if (block.type === 'error') return <div key={blockIndex} style={{ color: 'var(--dsw-alias-label-error,#ef4444)', whiteSpace: 'pre-wrap' }}>{block.text}</div>
+              if (block.type === 'tool') {
+                return (
+                  <details key={blockIndex} className="dsh-tutor-tool">
+                    <summary>{block.isError === true ? '⚠ ' : '🔧 '}{block.name}</summary>
+                    {block.arguments !== undefined ? <pre>{block.arguments}</pre> : null}
+                    {block.result !== undefined ? <pre>{block.result}</pre> : null}
+                  </details>
+                )
+              }
+              if (message.role === 'assistant') return <div key={blockIndex}><MarkdownText text={block.text} /></div>
+              return <div key={blockIndex} style={{ whiteSpace: 'pre-wrap' }}>{block.text}</div>
+            })}
           </div>
         ))}
       </div>
@@ -374,7 +382,7 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
        
         <textarea
           value={draft}
-          placeholder="追问这个知识点…"
+          placeholder={win.mode === 'explain' ? '就选中的内容提问…' : '继续追问…'}
           onChange={event => { setDraft(event.currentTarget.value) }}
           onKeyDown={event => {
             if (event.key === 'Enter' && !event.shiftKey) {
@@ -421,7 +429,7 @@ function TutorRoot({ ctx }: { ctx: Context }): JSX.Element {
     if (parentSessionId === undefined || starting) return
     setStarting(true)
     setStartError(null)
-    const result = await api.start({ parentSessionId, mode, selectionText: text })
+    const result = await api.start({ parentSessionId, mode, selectionText: text, autoSend: mode === 'translate' })
     setStarting(false)
     if (result.ok) {
       setWin({ ...result.value, mode, selectionText: text, parentSessionId })

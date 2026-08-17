@@ -32,11 +32,16 @@ interface TutorRecord {
   provider: string
   model: string
   reasoningEffort: TutorEffort
+  promptSent: boolean
   createdAt: number
   handle: TutorAgentHandle
 }
 
-interface TranscriptBlock { type: 'text' | 'reasoning'; text: string }
+type TranscriptBlock =
+  | { type: 'text'; text: string }
+  | { type: 'reasoning'; text: string }
+  | { type: 'tool'; name: string; arguments?: string; result?: string; isError?: boolean }
+  | { type: 'error'; text: string }
 interface TranscriptMessage { role: 'user' | 'assistant'; blocks: TranscriptBlock[] }
 
 interface TutorSettingsFace {
@@ -100,6 +105,13 @@ function foldBlocks(content: unknown): TranscriptBlock[] {
       blocks.push({ type: 'text', text: block.text })
     } else if (block?.type === 'reasoning' && typeof block.text === 'string' && block.text !== '') {
       blocks.push({ type: 'reasoning', text: block.text })
+    } else if (block?.type === 'tool-call' && typeof block.name === 'string') {
+      blocks.push({ type: 'tool', name: block.name, ...(typeof block.arguments === 'string' ? { arguments: block.arguments } : {}) })
+    } else if (block?.type === 'tool-result' && typeof block.toolCallId === 'string') {
+      const text = Array.isArray(block.content)
+        ? (block.content as Array<{ type?: string; text?: string }>).map(part => part.text ?? '').join(' ').slice(0, 2000)
+        : ''
+      blocks.push({ type: 'tool', name: block.toolCallId, result: text, ...(block.isError === true ? { isError: true } : {}) })
     }
   }
   return blocks
@@ -107,16 +119,58 @@ function foldBlocks(content: unknown): TranscriptBlock[] {
 
 function foldTranscript(events: readonly TutorSessionEvent[]): TranscriptMessage[] {
   const messages: TranscriptMessage[] = []
+  let currentAssistant: { key: string; message: TranscriptMessage } | null = null
+
+  const ensureAssistant = (key: string): TranscriptMessage => {
+    if (currentAssistant !== null && currentAssistant.key === key) return currentAssistant.message
+    const message: TranscriptMessage = { role: 'assistant', blocks: [] }
+    messages.push(message)
+    currentAssistant = { key, message }
+    return message
+  }
+  const appendText = (message: TranscriptMessage, type: 'text' | 'reasoning', delta: string): void => {
+    const last = message.blocks[message.blocks.length - 1]
+    if (last !== undefined && last.type === type) last.text += delta
+    else message.blocks.push({ type, text: delta })
+  }
+
   for (const event of events) {
     if (event.type === 'user/message') {
       const data = event.data as { source?: { kind?: string }; content?: unknown }
       if (data.source !== undefined && data.source.kind !== 'user') continue
       const blocks = foldBlocks(data.content)
       if (blocks.length > 0) messages.push({ role: 'user', blocks })
+      currentAssistant = null
+    } else if (event.type === 'assistant/chunk') {
+      const data = event.data as { turn?: unknown; step?: unknown; chunk?: { type?: string; text?: string } }
+      const key = `${String(data.turn ?? 0)}:${String(data.step ?? 0)}`
+      const chunk = data.chunk
+      if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') appendText(ensureAssistant(key), 'text', chunk.text)
+      else if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string') appendText(ensureAssistant(key), 'reasoning', chunk.text)
     } else if (event.type === 'assistant/message') {
-      const message = (event.data as { message?: { content?: unknown } } | null)?.message
-      const blocks = foldBlocks(message?.content)
-      if (blocks.length > 0) messages.push({ role: 'assistant', blocks })
+      const data = event.data as { turn?: unknown; step?: unknown; message?: { content?: unknown } }
+      const key = `${String(data.turn ?? 0)}:${String(data.step ?? 0)}`
+      const message = ensureAssistant(key)
+      const assembled = foldBlocks(data.message?.content)
+      if (assembled.length > 0) message.blocks = assembled
+    } else if (event.type === 'tool/call') {
+      const data = event.data as { turn?: unknown; step?: unknown; name?: string; arguments?: string }
+      const key = `${String(data.turn ?? 0)}:${String(data.step ?? 0)}`
+      ensureAssistant(key).blocks.push({ type: 'tool', name: data.name ?? 'tool', ...(typeof data.arguments === 'string' ? { arguments: data.arguments } : {}) })
+    } else if (event.type === 'tool/result') {
+      const data = event.data as { turn?: unknown; step?: unknown; message?: { content?: unknown; toolCallId?: string }; error?: { name?: string; code?: string } }
+      const key = `${String(data.turn ?? 0)}:${String(data.step ?? 0)}`
+      const name = data.message?.toolCallId ?? 'tool'
+      const text = Array.isArray(data.message?.content)
+        ? (data.message.content as Array<{ type?: string; text?: string }>).map(part => part.text ?? '').join(' ').slice(0, 2000)
+        : ''
+      ensureAssistant(key).blocks.push({ type: 'tool', name, result: data.error !== undefined ? `${data.error.name ?? 'error'}: ${data.error.code ?? ''}` : text, ...(data.error !== undefined ? { isError: true } : {}) })
+    } else if (event.type === 'turn/end') {
+      const reason = (event.data as { reason?: { kind?: string; error?: { message?: string; code?: string } } })?.reason
+      if (reason?.kind === 'error') {
+        messages.push({ role: 'assistant', blocks: [{ type: 'error', text: `${reason.error?.code ?? 'ERROR'}: ${reason.error?.message ?? '小窗会话执行失败'}` }] })
+      }
+      currentAssistant = null
     }
   }
   return messages
@@ -147,10 +201,11 @@ function buildApi(ctx: Context, tutors: Map<string, TutorRecord>, getSettings: (
     return record
   }
 
-  const start = async (payload: unknown): Promise<{ windowId: string; childSessionId: string; provider: string; model: string; reasoningEffort: TutorEffort }> => {
+  const start = async (payload: unknown): Promise<{ windowId: string; childSessionId: string; provider: string; model: string; reasoningEffort: TutorEffort; autoSend: boolean }> => {
     const parentSessionId = requireString(payload, 'parentSessionId')
     const mode = requireString(payload, 'mode')
     const selectionText = requireString(payload, 'selectionText')
+    const autoSend = (payload as { autoSend?: unknown }).autoSend !== false
     if (mode !== 'explain' && mode !== 'translate') throw new TutorError('bad-request', 'mode must be explain or translate')
 
     for (const record of tutors.values()) {
@@ -211,20 +266,31 @@ function buildApi(ctx: Context, tutors: Map<string, TutorRecord>, getSettings: (
       provider,
       model,
       reasoningEffort: defaultEffort,
+      promptSent: autoSend,
       createdAt: Date.now(),
       handle,
     }
     tutors.set(record.windowId, record)
 
-    handle.agent.followup(userMessage(buildPrompt(mode, selectionText)))
-    return { windowId: record.windowId, childSessionId, provider, model, reasoningEffort: defaultEffort }
+    if (autoSend) {
+      handle.agent.followup(userMessage(buildPrompt(mode, selectionText)))
+    }
+    return { windowId: record.windowId, childSessionId, provider, model, reasoningEffort: defaultEffort, autoSend }
   }
 
   const followup = (payload: unknown): { accepted: true } => {
     const windowId = requireString(payload, 'windowId')
     const text = requireString(payload, 'text')
     const record = recordOf(windowId)
-    record.handle.agent.followup(userMessage(text))
+    if (!record.promptSent && record.mode === 'explain') {
+      record.handle.agent.followup(userMessage(buildPrompt('explain', `${record.selectionText}
+
+用户的问题是：
+${text}`)))
+    } else {
+      record.handle.agent.followup(userMessage(text))
+    }
+    record.promptSent = true
     return { accepted: true }
   }
 

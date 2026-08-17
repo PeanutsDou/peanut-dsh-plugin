@@ -6,9 +6,15 @@ export type TutorEffort = 'off' | 'low' | 'high' | 'max'
 export interface ApiError { code: string; message: string }
 export type ApiResult<T> = { ok: true; value: T } | { ok: false; error: ApiError }
 
+export type TutorBlock =
+  | { type: 'text'; text: string }
+  | { type: 'reasoning'; text: string }
+  | { type: 'tool'; name: string; arguments?: string; result?: string; isError?: boolean }
+  | { type: 'error'; text: string }
+
 export interface TutorMessage {
   role: 'user' | 'assistant'
-  blocks: Array<{ type: 'text' | 'reasoning'; text: string }>
+  blocks: TutorBlock[]
 }
 
 export interface StartResult {
@@ -17,6 +23,7 @@ export interface StartResult {
   provider: string
   model: string
   reasoningEffort: TutorEffort
+  autoSend: boolean
 }
 
 async function call<T>(method: string, payload: Record<string, unknown>): Promise<ApiResult<T>> {
@@ -33,7 +40,7 @@ async function call<T>(method: string, payload: Record<string, unknown>): Promis
 }
 
 export const api = {
-  start: (args: { parentSessionId: string; mode: TutorMode; selectionText: string }) =>
+  start: (args: { parentSessionId: string; mode: TutorMode; selectionText: string; autoSend?: boolean }) =>
     call<StartResult>('tutor.start', args),
   followup: (args: { windowId: string; text: string }) =>
     call<{ accepted: true }>('tutor.followup', args),

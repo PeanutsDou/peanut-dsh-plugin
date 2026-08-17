@@ -8,7 +8,7 @@
  * The page itself is a pure container: it owns no settings values and only
  * renders cards contributed by feature plugins.
  */
-import { useEffect, useSyncExternalStore, type ReactNode } from 'react'
+import { useSyncExternalStore, type ReactNode } from 'react'
 
 export const name = 'dsh-custom-model-config-client'
 export const inject = ['slots']
@@ -58,7 +58,9 @@ function ensureRegistry(): ModelConfigRegistry {
 
   const cards = new Map<string, ModelConfigCard>()
   const listeners = new Set<() => void>()
+  let snapshot: ModelConfigCard[] = []
   const notify = (): void => {
+    snapshot = [...cards.values()]
     for (const listener of [...listeners]) listener()
   }
 
@@ -72,7 +74,7 @@ function ensureRegistry(): ModelConfigRegistry {
       if (cards.delete(id)) notify()
     },
     getCards() {
-      return [...cards.values()]
+      return snapshot
     },
     subscribe(listener) {
       listeners.add(listener)
@@ -130,15 +132,6 @@ function ModelConfigPage(): JSX.Element {
     registry.getCards,
     registry.getCards,
   )
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      // Cheap heartbeat so the page picks up pending registrations even when a
-      // provider forgot to notify through the registry path.
-      if (registry.getCards().length > 0) window.clearInterval(timer)
-    }, 300)
-    return () => { window.clearInterval(timer) }
-  }, [registry])
-
   const ordered = [...cards].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
   return (
     <div className="dsh-cmc-page">
