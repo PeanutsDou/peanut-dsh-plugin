@@ -111,6 +111,15 @@ function rollbackAttemptsPath(): string {
   return path.join(rollbackRootDir(), ATTEMPTS_FILE)
 }
 
+/** Known-good snapshot: the last composition that reached a successful boot. */
+function knownGoodSnapshotDir(): string {
+  return path.join(rollbackRootDir(), 'known-good')
+}
+
+function knownGoodManifestPath(): string {
+  return path.join(knownGoodSnapshotDir(), SNAPSHOT_MANIFEST)
+}
+
 /** Relative files that can brick startup when broken: profile patches + user settings. */
 function snapshotSources(): Array<{ abs: string; rel: string }> {
   const out: Array<{ abs: string; rel: string }> = []
@@ -159,6 +168,39 @@ function snapshotConfig(): string | null {
   } catch (error) {
     debugLog('snapshotConfig THREW: ' + String(error))
     return null
+  }
+}
+
+/**
+ * Promote the current composition to the known-good snapshot. Called at apply,
+ * so only a state that reached a successful boot is ever promoted: plugin-tree
+ * load failures (the usual breakage) die before any apply hook runs and leave
+ * the previous known-good untouched. The restart helper restores this
+ * snapshot, not the restart-time `latest` one, when a relaunch fails.
+ */
+function promoteKnownGood(): void {
+  const sources = snapshotSources()
+  if (sources.length === 0) return
+  try {
+    const dir = knownGoodSnapshotDir()
+    fs.rmSync(dir, { recursive: true, force: true })
+    fs.mkdirSync(dir, { recursive: true })
+    const files: Array<{ rel: string; size: number }> = []
+    for (const source of sources) {
+      const target = path.join(dir, source.rel)
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.copyFileSync(source.abs, target)
+      files.push({ rel: source.rel, size: fs.statSync(target).size })
+    }
+    const manifest = {
+      createdAt: new Date().toISOString(),
+      pid: process.pid,
+      files,
+    }
+    fs.writeFileSync(knownGoodManifestPath(), JSON.stringify(manifest, null, 2) + '\n', 'utf8')
+    debugLog(`known-good promoted: ${dir} (${files.length} file(s))`)
+  } catch (error) {
+    debugLog('promoteKnownGood THREW: ' + String(error))
   }
 }
 
@@ -930,6 +972,7 @@ export function buildRestartHelperScript(
     "const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')",
     "const attemptsFile = path.join(rollbackDir, 'attempts.json')",
     "const manifestFile = path.join(rollbackDir, 'latest', 'manifest.json')",
+    "const knownGoodManifestFile = path.join(rollbackDir, 'known-good', 'manifest.json')",
     "function log(msg) {",
     "  try { fs.appendFileSync(logErr, new Date().toISOString() + ' [dsh-restart-helper] ' + msg + '\\n', 'utf8') } catch {}",
     "}",
@@ -965,11 +1008,14 @@ export function buildRestartHelperScript(
     "  }",
     "}",
     "function restoreSnapshot(reason) {",
-    "  const manifest = readJson(manifestFile, null)",
+    "  // Prefer the known-good snapshot (the last composition that booted",
+    "  // successfully); fall back to the restart-time `latest` snapshot.",
+    "  const snapshotRoot = fs.existsSync(knownGoodManifestFile) ? 'known-good' : 'latest'",
+    "  const manifest = readJson(path.join(rollbackDir, snapshotRoot, 'manifest.json'), null)",
     "  let restored = 0",
     "  if (manifest && Array.isArray(manifest.files)) {",
     "    for (const f of manifest.files) {",
-    "      const src = path.join(rollbackDir, 'latest', String(f.rel))",
+    "      const src = path.join(rollbackDir, snapshotRoot, String(f.rel))",
     "      const dst = path.join(home, String(f.rel))",
     "      try {",
     "        fs.mkdirSync(path.dirname(dst), { recursive: true })",
@@ -978,7 +1024,7 @@ export function buildRestartHelperScript(
     "      } catch (e) { log('rollback restore failed for ' + f.rel + ': ' + e) }",
     "    }",
     "  }",
-    "  if (restored > 0) log('rollback: restored ' + restored + ' snapshot file(s) after: ' + reason)",
+    "  if (restored > 0) log('rollback: restored ' + restored + ' snapshot file(s) from ' + snapshotRoot + ' after: ' + reason)",
     "  else log('rollback: no snapshot to restore for: ' + reason)",
     "}",
     "function portUp(cb) {",
@@ -1269,6 +1315,14 @@ export function apply(ctx: Context): void {
     debugLog('apply: rollback history reported')
   } catch (error) {
     debugLog('apply: reportRollbackHistory THREW: ' + String(error))
+  }
+  try {
+    // Only a successful boot reaches apply, so promoting here records the
+    // composition the helper should roll back to on the next failed relaunch.
+    promoteKnownGood()
+    debugLog('apply: known-good promoted')
+  } catch (error) {
+    debugLog('apply: promoteKnownGood THREW: ' + String(error))
   }
   try {
     ensureWatchdog(dynamic)
