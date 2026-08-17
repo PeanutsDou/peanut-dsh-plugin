@@ -1,7 +1,7 @@
 {
   "name": "@peanutsdou/dsh-turn-ui",
   "version": "0.1.0",
-  "description": "TurnFold core patch + left-edge turn navigation rail for DSH long sessions.",
+  "description": "TurnFold process-row containers and expanded thinking height clamp for DSH long sessions.",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",

@@ -1,14 +1,12 @@
 /**
- * dsh-turn-ui — client half: left-edge floating turn navigation rail.
+ * dsh-turn-ui — client half: per-turn fold containers plus an expanded
+ * thinking-body height clamp.
  *
- * Registered into `conversation.session.header.utilities` (session scope) and
- * rendered through a portal so the fixed rail never participates in the header
- * layout. Clicking a tick jumps to the matching `data-turn-start` anchor added
- * by the TurnFold core patch, falling back to proportional scroll for turns
- * outside the paged window.
+ * The thinking clamp only styles the disclosure body when it is already in the
+ * DOM (native `data-open` state). It never toggles the React open state, so the
+ * native collapsed Think summary row is left untouched.
  */
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { createPortal } from 'react-dom'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ClientContext, SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
@@ -22,6 +20,8 @@ type RailProps = PropsRuntime<'conversation.session.header.utilities'>
 
 interface TurnUiClientSettings {
   turnFoldEnabled: boolean
+  thinkingHeightEnabled: boolean
+  thinkingMaxHeight: number
 }
 
 interface ClientSettingsStore {
@@ -33,7 +33,7 @@ interface ClientSettingsStore {
 }
 
 const clientSettingsStore: ClientSettingsStore = {
-  current: { turnFoldEnabled: true },
+  current: { turnFoldEnabled: true, thinkingHeightEnabled: true, thinkingMaxHeight: 240 },
   listeners: new Set<() => void>(),
   getSnapshot(): TurnUiClientSettings {
     return this.current
@@ -43,7 +43,12 @@ const clientSettingsStore: ClientSettingsStore = {
     return () => { this.listeners.delete(listener) }
   },
   set(next: TurnUiClientSettings): void {
-    if (next.turnFoldEnabled === this.current.turnFoldEnabled) return
+    const current = this.current
+    if (
+      next.turnFoldEnabled === current.turnFoldEnabled
+      && next.thinkingHeightEnabled === current.thinkingHeightEnabled
+      && next.thinkingMaxHeight === current.thinkingMaxHeight
+    ) return
     this.current = next
     for (const listener of this.listeners) listener()
   },
@@ -65,32 +70,24 @@ function chatFlow(port: HTMLElement | null): HTMLElement | null {
   return port?.querySelector<HTMLElement>('[data-chat-flow]') ?? null
 }
 
-function ensureStyles(): void {
-  const id = 'dsh-turn-rail-styles'
+function ensureThinkingStyles(): void {
+  const id = 'dsh-turn-thinking-styles'
   if (document.getElementById(id) !== null) return
   const style = document.createElement('style')
   style.id = id
   style.textContent = `
-.dsh-turn-rail{position:fixed;z-index:1300;width:15px;pointer-events:none;transition:width .12s ease}
-.dsh-turn-rail:hover{width:28px}
-.dsh-turn-rail-track{position:absolute;inset:0;display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:8px 0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-label-caption) transparent;pointer-events:auto}
-.dsh-turn-rail-track::-webkit-scrollbar{width:4px}
-.dsh-turn-rail-track::-webkit-scrollbar-thumb{background:var(--dsw-alias-label-caption);border-radius:2px}
-.dsh-turn-rail-track::-webkit-scrollbar-track{background:transparent}
-.dsh-turn-slot{position:relative;flex:0 0 14px;width:100%;height:14px;border:0;padding:0;background:transparent;display:flex;align-items:center;cursor:pointer}
-.dsh-turn-bar-inner{display:block;width:100%;height:4px;background:var(--dsw-alias-label-caption);opacity:.55;transition:opacity .12s,background .12s}
-.dsh-turn-slot:hover .dsh-turn-bar-inner,.dsh-turn-slot.active .dsh-turn-bar-inner{opacity:1;background:var(--dsw-alias-label-primary)}
-.dsh-turn-slot.running .dsh-turn-bar-inner{animation:dsh-turn-bar-pulse 1.2s ease-in-out infinite}
-@keyframes dsh-turn-bar-pulse{0%,100%{opacity:1}50%{opacity:.3}}
-.dsh-turn-rail-tip{position:absolute;left:calc(100% + 10px);top:50%;display:block;max-width:280px;padding:6px 9px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:12px/1.5 system-ui;white-space:nowrap;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.2);transform:translateY(-50%);z-index:2}
-.dsh-turn-rail-tip-title{display:block;font-weight:600}
-.dsh-turn-rail-tip-summary{display:block;margin-top:2px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.5;overflow:hidden;text-overflow:ellipsis}
+[data-dsh-turn-thinking-body]{scrollbar-width:thin;scrollbar-color:var(--dsw-alias-label-caption) transparent}
+[data-dsh-turn-thinking-body]::-webkit-scrollbar{width:6px}
+[data-dsh-turn-thinking-body]::-webkit-scrollbar-thumb{background:var(--dsw-alias-label-caption);border-radius:3px}
+[data-dsh-turn-thinking-body]::-webkit-scrollbar-track{background:transparent}
 .dsh-turn-ui-card{list-style:none;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}
 .dsh-turn-ui-card-header{width:100%;appearance:none;border:0;background:none;font:inherit;color:inherit;text-align:left;cursor:pointer;padding:14px 16px}
 .dsh-turn-ui-card-header span{display:block;font-size:15px;font-weight:600}
 .dsh-turn-ui-card-body{padding:0 16px 12px;display:flex;flex-direction:column;gap:10px}
 .dsh-turn-ui-toggle{display:flex;align-items:center;gap:10px;font-size:13px}
-.dsh-turn-ui-toggle input{accent-color:var(--dsw-alias-brand-primary)}
+.dsh-turn-ui-toggle input[type=checkbox]{accent-color:var(--dsw-alias-brand-primary)}
+.dsh-turn-ui-section-title{margin-top:4px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-tertiary)}
+.dsh-turn-ui-number{width:88px;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:13px/1.5 system-ui}
 `
   document.head.append(style)
 }
@@ -235,6 +232,75 @@ function clearFoldOverlays(sessionId: string): void {
   port?.querySelectorAll<HTMLElement>('.dsh-turn-fold-overlay').forEach(overlay => {
     if (overlay.dataset.sessionId === sessionId) overlay.remove()
   })
+}
+
+// ===== expanded thinking-body height clamp =====
+
+const THINKING_MIN_HEIGHT = 120
+const THINKING_MAX_HEIGHT = 2000
+const THINKING_DEFAULT_HEIGHT = 240
+const thinkingStyledBodies = new Set<HTMLElement>()
+const thinkingOriginalStyles = new WeakMap<HTMLElement, string>()
+
+function clampThinkingHeight(value: unknown): number {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(parsed)) return THINKING_DEFAULT_HEIGHT
+  return Math.min(THINKING_MAX_HEIGHT, Math.max(THINKING_MIN_HEIGHT, Math.round(parsed)))
+}
+
+/**
+ * Find the disclosure body inside one Think root. The disclosure root carries
+ * `data-open` only while expanded, and the body is its child that is not the
+ * `data-disclosure-row` chrome row.
+ */
+function thinkingBodyOf(root: HTMLElement): HTMLElement | null {
+  const disclosure = root.querySelector<HTMLElement>(':scope > [data-open]')
+  if (disclosure === null) return null
+  for (const child of Array.from(disclosure.children)) {
+    if (child instanceof HTMLElement && !child.hasAttribute('data-disclosure-row')) return child
+  }
+  return null
+}
+
+function restoreThinkingBody(body: HTMLElement): void {
+  const original = thinkingOriginalStyles.get(body)
+  if (original === undefined) body.removeAttribute('style')
+  else if (body.style.cssText !== original) body.style.cssText = original
+  body.removeAttribute('data-dsh-turn-thinking-body')
+  thinkingStyledBodies.delete(body)
+}
+
+function setThinkingBodyStyle(body: HTMLElement, limit: number): void {
+  const original = thinkingOriginalStyles.get(body)
+  const base = original ?? body.style.cssText
+  if (original === undefined) thinkingOriginalStyles.set(body, base)
+  const suffix = `max-height:${limit}px!important;overflow-y:auto!important;overscroll-behavior:contain`
+  const next = base === '' ? suffix : `${base};${suffix}`
+  if (body.style.cssText !== next) body.style.cssText = next
+  body.dataset.dshTurnThinkingBody = '1'
+  thinkingStyledBodies.add(body)
+}
+
+/**
+ * Clamp every currently-expanded Think body in the chat flow. Passing a null
+ * flow (non-chat tab) or `enabled=false` restores all previously styled nodes.
+ */
+function applyThinkingHeight(flow: HTMLElement | null, enabled: boolean, maxHeight: number): void {
+  if (!enabled || flow === null) {
+    for (const body of [...thinkingStyledBodies]) restoreThinkingBody(body)
+    return
+  }
+  const limit = clampThinkingHeight(maxHeight)
+  const currentBodies = new Set<HTMLElement>()
+  flow.querySelectorAll<HTMLElement>('[data-variant="think"]').forEach(root => {
+    const body = thinkingBodyOf(root)
+    if (body === null) return
+    currentBodies.add(body)
+    setThinkingBodyStyle(body, limit)
+  })
+  for (const body of [...thinkingStyledBodies]) {
+    if (!currentBodies.has(body)) restoreThinkingBody(body)
+  }
 }
 
 function stateKey(sessionId: string, turn: number): string {
@@ -406,7 +472,10 @@ function TurnFoldAdapter({ useSession, sessionId }: RailProps) {
     const run = (): void => {
       if (foldApplying) return
       foldApplying = true
-      try { applyFold(chatRef.current, sessionId, settings.turnFoldEnabled) } finally { foldApplying = false }
+      try {
+        applyFold(chatRef.current, sessionId, settings.turnFoldEnabled)
+        applyThinkingHeight(chatFlow(scrollport()), settings.thinkingHeightEnabled, settings.thinkingMaxHeight)
+      } finally { foldApplying = false }
     }
     const schedule = (): void => {
       cancelAnimationFrame(raf)
@@ -416,7 +485,7 @@ function TurnFoldAdapter({ useSession, sessionId }: RailProps) {
       if (observedPort === port) return
       observedPort = port
       observer = new MutationObserver(schedule)
-      observer.observe(port, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-chat-anchor-key'] })
+      observer.observe(port, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-chat-anchor-key', 'data-open', 'data-state'] })
     }
     // Interval doubles as a reconciliation pass (labels, durations, row
     // presence) for snapshot changes that do not produce DOM mutations.
@@ -437,8 +506,9 @@ function TurnFoldAdapter({ useSession, sessionId }: RailProps) {
       observer?.disconnect()
       restoreFoldRows()
       clearFoldOverlays(sessionId)
+      for (const body of [...thinkingStyledBodies]) restoreThinkingBody(body)
     }
-  }, [sessionId, settings.turnFoldEnabled])
+  }, [sessionId, settings.turnFoldEnabled, settings.thinkingHeightEnabled, settings.thinkingMaxHeight])
   return null
 }
 
@@ -462,13 +532,35 @@ function TurnUiSettingsCard(props: {
             <input type="checkbox" checked={settings.turnFoldEnabled} onChange={event => { props.set('turnFoldEnabled', event.currentTarget.checked) }} />
             按轮折叠过程输出（上下文注入 / 思考 / 工具 / 产物）
           </label>
-                  </div>
+          <div className="dsh-turn-ui-section-title">思考过程</div>
+          <label className="dsh-turn-ui-toggle">
+            <input type="checkbox" checked={settings.thinkingHeightEnabled} onChange={event => { props.set('thinkingHeightEnabled', event.currentTarget.checked) }} />
+            展开思考时限制高度（超出在思考内部滚动）
+          </label>
+          <label className="dsh-turn-ui-toggle">
+            最大高度
+            <input
+              type="number"
+              className="dsh-turn-ui-number"
+              min={THINKING_MIN_HEIGHT}
+              max={THINKING_MAX_HEIGHT}
+              step={10}
+              value={settings.thinkingMaxHeight}
+              onChange={event => {
+                const next = event.currentTarget.valueAsNumber
+                if (Number.isFinite(next)) props.set('thinkingMaxHeight', clampThinkingHeight(next))
+              }}
+            />
+            px
+          </label>
+        </div>
       ) : null}
     </li>
   )
 }
 
 export function apply(ctx: ClientContext): void {
+  ensureThinkingStyles()
   let settingsScope: SettingsScope<unknown> | undefined
   try {
     settingsScope = ctx.settingsScope.bind({ namespace: 'dsh-turn-ui' }) as SettingsScope<unknown>
@@ -477,6 +569,8 @@ export function apply(ctx: ClientContext): void {
       const value = (snap.value ?? {}) as Record<string, unknown>
       const next: TurnUiClientSettings = {
         turnFoldEnabled: value.turnFoldEnabled !== false,
+        thinkingHeightEnabled: value.thinkingHeightEnabled !== false,
+        thinkingMaxHeight: clampThinkingHeight(value.thinkingMaxHeight),
       }
       clientSettingsStore.set(next)
       document.documentElement.dataset.turnFoldDisabled = next.turnFoldEnabled ? '0' : '1'
