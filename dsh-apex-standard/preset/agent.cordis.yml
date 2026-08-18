@@ -12,6 +12,10 @@
 #      8192/4096/1024): the stock pruner cuts long tool output mid-section —
 #      the harness analysis flagged exactly this as a suspected cause of
 #      re-searches when a build error sits in the truncated middle.
+#   3. On Windows `replaceTools` swaps bash -> pwsh in every post-anchor
+#      catalog (promoted resident set, post-compaction controlled set, Flash
+#      promoted catalog); the strict bootstrap pair keeps bash for the
+#      Minimal schema anchor.
 # Everything else (row order, realms, groups) is upstream-identical.
 #
 # This file is an AGENT-PLANE composition. The roster mounts it ONCE under a
@@ -61,6 +65,14 @@
     # str_replace_editor; todo_write / ask_user_question return automatically
     # after the single controlled request re-promotes the session.
     compactionTools: [read, edit, glob, grep]
+    # Post-bootstrap tool swaps (empty = none). Applied to every catalog
+    # AFTER the strict anchor phase — promoted resident set, post-compaction
+    # controlled set, and the Flash promoted catalog — never to the strict
+    # bootstrap pair, so request #1 keeps the Minimal anchor schema. On
+    # Windows the resident shell becomes pwsh instead of Git Bash; if pwsh
+    # were missing the swap degrades to keeping bash. Tools the model
+    # explicitly unlocks via dev_tool_search are never swapped.
+    replaceTools: !!js "process.platform === 'win32' ? { bash: 'pwsh' } : {}"
     # ── model-aware branching (all optional; defaults shown) ──
     # forcePath: auto            # auto | pro | flash — pin the path manually
     # flashGuidance: true        # false on tightly RELATED task chains (P21)
@@ -116,9 +128,10 @@
     promoteOn: either
 
 # On-demand tool discovery (the tool-search pattern): the promoted Pro catalog
-# keeps a minimal resident set; heavier Standard tools (web_search, subagent,
-# workflow, …) are unlocked on demand via dev_tool_search. Unlocks are derived
-# from durable tool/call events, so resume and reload keep them.
+# keeps a minimal resident set plus the fast ripgrep-backed glob/grep search
+# tools; heavier Standard tools (web_search, subagent, workflow, …) are
+# unlocked on demand via dev_tool_search. Unlocks are derived from durable
+# tool/call events, so resume and reload keep them.
 - id: dev-tool-search
   name: ./dev-tool-search.mjs
 
@@ -185,6 +198,14 @@
 # Only set `bashPath` when the probe would pick the wrong one (e.g. the WSL
 # shim). No OS sandbox confinement on Windows (landlock is linux-only); the
 # tool description says so.
+#
+# POST-ANCHOR LOCK: after promotion (or in a post-compaction controlled
+# phase) the bash tool rejects execution with a pointer at pwsh — the wire
+# catalog already dropped bash there, but the runtime executes registry-known
+# tools even when unadvertised, and Pro keeps calling bash from anchor
+# trajectory habit. The strict anchor phase is never locked, and an explicit
+# dev_tool_search unlock of `bash` lifts the lock (opt out: `config:
+# lockAfterPromotion: false`).
 - id: custom-bash
   name: ./custom-bash.mjs
   disabled: !!js process.platform !== 'win32'

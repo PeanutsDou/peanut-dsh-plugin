@@ -26,6 +26,19 @@
  * confinement on Windows (the sandbox backend is linux-only); the tool
  * description says so. The bootstrap catalog pairs this with
  * `str_replace_editor` (Minimal's two tools).
+ *
+ * POST-ANCHOR LOCK (config `lockAfterPromotion`, default true): after the
+ * session promotes (first durable tool/call or assistant/message) — or while
+ * a post-compaction controlled phase holds — this tool REJECTS execution
+ * with a guidance error pointing at pwsh. Why: apex-bootstrap removes `bash`
+ * from the wire catalog after promotion, but the runtime executes tool names
+ * it knows even when they are not in the catalog — and DeepSeek Pro, having
+ * anchored on the bash pair, keeps calling `bash` from trajectory habit. The
+ * lock converts that habit into one guidance error so the model moves to
+ * pwsh. A model that explicitly unlocks `bash` via dev_tool_search (durable
+ * tool/call) is allowed to use it again — the unlock is the escape hatch and
+ * mirrors apex-bootstrap's "explicit unlock wins" rule. The strict anchor
+ * phase (fresh session or guardian retry) is never locked.
  */
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -36,8 +49,14 @@ export const inject = ['subprocess', 'tools']
 
 import { existsSync } from 'node:fs'
 
+import { createEpochPromotion } from './compaction-epoch.mjs'
+import { isGuardianRetryBoundary } from './guardian-boundary.mjs'
+
 const DEFAULT_TIMEOUT_MS = 120000
 const DEFAULT_MAX_OUTPUT_BYTES = 64000
+
+/** Promotion signals for the post-anchor lock — the same `either` pair apex-bootstrap uses. */
+const PROMOTE_EVENTS = ['tool/call', 'assistant/message']
 
 /**
  * Common Git for Windows install locations, probed in order on win32.
@@ -95,6 +114,32 @@ const commandSchema = {
   additionalProperties: false,
 }
 
+/**
+ * True when the model explicitly unlocked `bash` via dev_tool_search after
+ * the given epoch boundary. Mirrors apex-bootstrap's unlock scan: only
+ * durable `tool/call` events with `data.name === 'dev_tool_search'` and
+ * `toolNames` containing 'bash' count, and only when recorded after the last
+ * compaction/guardian boundary (seq-less events are treated as post-boundary).
+ */
+function bashUnlockedAfter(session, boundary) {
+  if (session === undefined || !Array.isArray(session.events)) return false
+  for (const event of session.events) {
+    if (event.type !== 'tool/call') continue
+    const seq = event.seq ?? 0
+    if (boundary >= 0 && seq <= boundary) continue
+    if (event.data?.name !== 'dev_tool_search') continue
+    let args
+    try {
+      args = JSON.parse(event.data.arguments)
+    } catch {
+      continue
+    }
+    if (args === null || typeof args !== 'object' || Array.isArray(args)) continue
+    if (Array.isArray(args.toolNames) && args.toolNames.includes('bash')) return true
+  }
+  return false
+}
+
 /** Register the model-facing `bash` tool. */
 export function apply(ctx, config) {
   const bashPath = resolveBashPath(config?.bashPath)
@@ -105,6 +150,14 @@ export function apply(ctx, config) {
   }
   const timeoutMs = Number.isSafeInteger(config?.timeoutMs) && config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_TIMEOUT_MS
   const maxOutputBytes = Number.isSafeInteger(config?.maxOutputBytes) && config.maxOutputBytes > 0 ? config.maxOutputBytes : DEFAULT_MAX_OUTPUT_BYTES
+  const lockAfterPromotion = config?.lockAfterPromotion === undefined ? true : config.lockAfterPromotion === true
+
+  // Same epoch-aware promotion tracker semantics as apex-bootstrap (shared
+  // module): durable-event growth rescan covers runtimes without the
+  // session/event feed (dsh rc.6), and guardian retries count as boundaries
+  // so the anchor retry always keeps bash.
+  const promotion = createEpochPromotion(PROMOTE_EVENTS, { retryBoundary: isGuardianRetryBoundary })
+  ctx.on('session/event', (session, event) => promotion.observe(session, event))
 
   ctx.tools.register({
     name: 'bash',
@@ -131,6 +184,22 @@ export function apply(ctx, config) {
       render: (_args, value) => [{ type: 'text', text: value.text }],
     },
     async execute(args, exec) {
+      // Post-anchor lock: once promoted (or in a post-compaction controlled
+      // phase), the bash tool refuses to run so trajectory habit does not
+      // keep it in play against a catalog that no longer contains it. The
+      // strict anchor phase (fresh session / guardian retry) always allows
+      // bash, and an explicit dev_tool_search unlock of 'bash' lifts the
+      // lock for the current epoch.
+      const agent = exec?.agent
+      if (lockAfterPromotion && agent !== undefined) {
+        const status = promotion.status(agent)
+        if ((status.promoted || status.mode === 'controlled') && !bashUnlockedAfter(agent.session, status.boundary)) {
+          throw new Error(
+            'bash is locked after the anchor phase on this Windows preset: use the pwsh tool (PowerShell) for shell commands instead. '
+            + 'If you truly need Git Bash, unlock it explicitly with dev_tool_search({"toolNames": ["bash"]}) first.',
+          )
+        }
+      }
       const shell = await ctx.subprocess.resolveExecutable(bashPath, undefined, exec?.signal)
       const workdir = typeof args.workdir === 'string' && args.workdir.length > 0
         ? args.workdir

@@ -41,9 +41,10 @@ function toJsonSchema(spec) {
 
 /**
  * The capability index: resident minimal tools (bash / str_replace_editor /
- * skill_search / skill_load) cannot cover these, so the model must search
- * and unlock them on demand. Kept in the description so the model KNOWS what
- * exists without a full catalog dump.
+ * glob / grep / skill_search / skill_load; on Windows pwsh replaces bash
+ * after the anchor via apex-bootstrap `replaceTools`) cannot cover these,
+ * so the model must search and unlock them on demand. Kept in the
+ * description so the model KNOWS what exists without a full catalog dump.
  */
 const UNLOCKABLE_INDEX = [
   'web_search — internet search and web retrieval',
@@ -60,12 +61,24 @@ const UNLOCKABLE_INDEX = [
 
 /** Register the model-facing `dev_tool_search` tool. */
 export function apply(ctx) {
+  // Platform-aware resident-set line: apex-bootstrap swaps bash -> pwsh on
+  // Windows after the anchor, so the description must match what the model
+  // actually has resident there. On Windows custom-bash also LOCKS bash
+  // execution after promotion (it rejects with a pointer at pwsh); the only
+  // way back is an explicit unlock of 'bash' through this tool.
+  const residentLine = process.platform === 'win32'
+    ? 'bash + str_replace_editor for the anchored first request, then pwsh, str_replace_editor, glob, grep, skill_search, skill_load after promotion'
+    : 'bash, str_replace_editor, glob, grep, skill_search, skill_load'
   ctx.tools.register({
     name: 'dev_tool_search',
     description: [
       'Discover and unlock tools that are NOT currently available.',
       '',
-      'This session starts with a minimal resident set: bash, str_replace_editor, skill_search, skill_load. Everything else is unlocked on demand through this tool.',
+      `This session starts with a minimal resident set: ${residentLine}. Everything else is unlocked on demand through this tool.`,
+      'Code search is already available via glob/grep — use them instead of the shell for whole-repo scans.',
+      ...(process.platform === 'win32'
+        ? ['After the anchor phase the bash tool is LOCKED (calling it fails with a pointer at pwsh). Unlock bash through this tool ONLY if a task truly needs Git Bash.']
+        : []),
       '',
       'If the current task needs any of the following, call dev_tool_search FIRST — do not try to work around them with bash:',
       ...UNLOCKABLE_INDEX.map((line) => `- ${line}`),

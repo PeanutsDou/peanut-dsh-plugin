@@ -82,13 +82,13 @@ check('pro fresh request exposes only the bootstrap pair',
   names(await runAssemble(pro)), ['bash', 'str_replace_editor'])
 
 proEvents.push(toolCall(1, 'bash'))
-check('pro promoted narrows to the resident set (5 tools)',
-  names(await runAssemble(pro)), ['bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load'])
+check('pro promoted narrows to the resident set (7 tools)',
+  names(await runAssemble(pro)), ['bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load', 'glob', 'grep'])
 
 proEvents.push(toolCall(2, 'dev_tool_search', { toolNames: ['web_search', 'todo_write'] }))
 checkSet('pro resident set grows with unlocked tools',
   names(await runAssemble(pro)),
-  ['bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load', 'web_search', 'todo_write'])
+  ['bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load', 'glob', 'grep', 'web_search', 'todo_write'])
 
 proEvents.push(compactionEnd(3))
 check('post-compaction controlled phase = bootstrap pair + compactionTools',
@@ -96,7 +96,7 @@ check('post-compaction controlled phase = bootstrap pair + compactionTools',
 
 proEvents.push(toolCall(4, 'read'))
 check('post-compaction re-promotion does NOT carry pre-compaction unlocks',
-  names(await runAssemble(pro)), ['bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load'])
+  names(await runAssemble(pro)), ['bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load', 'glob', 'grep'])
 
 // ── Guardian retry boundary: fresh mode, NOT controlled mode ────────────
 proEvents.push(guardianRetry(7))
@@ -104,7 +104,56 @@ check('post-guardian-retry fresh phase exposes the strict bootstrap pair (no com
   names(await runAssemble(pro)), ['bash', 'str_replace_editor'])
 proEvents.push(toolCall(8, 'bash'))
 check('post-guardian-retry re-promotion narrows to the resident set',
-  names(await runAssemble(pro)), ['bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load'])
+  names(await runAssemble(pro)), ['bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load', 'glob', 'grep'])
+
+// ── replaceTools: post-bootstrap swap (Windows bash -> pwsh) ────────────
+const swapListeners = harness({
+  bootstrapTools: ['bash', 'str_replace_editor'],
+  compactionTools: ['read', 'edit', 'glob', 'grep'],
+  replaceTools: { bash: 'pwsh' },
+})
+const swapAssemble = swapListeners.get('system-prompt/assemble')[0].fn
+const runSwap = (agent) => swapAssemble(null, { agent }, async () => assembled())
+const swapEvents = []
+const swapPro = makeAgent('deepseek-v4-pro', swapEvents)
+
+check('swap: fresh request keeps the strict bootstrap pair (no swap before the anchor)',
+  names(await runSwap(swapPro)), ['bash', 'str_replace_editor'])
+
+swapEvents.push(toolCall(1, 'bash'))
+check('swap: promoted resident set replaces bash with pwsh',
+  names(await runSwap(swapPro)), ['pwsh', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load', 'glob', 'grep'])
+
+swapEvents.push(compactionEnd(2))
+check('swap: controlled phase keeps pwsh + compactionTools',
+  names(await runSwap(swapPro)), ['pwsh', 'str_replace_editor', 'read', 'edit', 'glob', 'grep'])
+
+swapEvents.push(toolCall(3, 'read'))
+check('swap: re-promotion keeps the swap',
+  names(await runSwap(swapPro)), ['pwsh', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load', 'glob', 'grep'])
+
+// An explicit dev_tool_search unlock wins over the swap: the model asked
+// for bash back, so the resident set keeps bash (and adds no pwsh).
+swapEvents.push(toolCall(4, 'dev_tool_search', { toolNames: ['bash'] }))
+check('swap: explicit bash unlock wins over the swap',
+  names(await runSwap(swapPro)), ['bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load', 'glob', 'grep'])
+
+// Flash promoted full catalog: the swap drops bash and keeps pwsh.
+const swapFlashEvents = []
+const swapFlash = makeAgent('deepseek-v4-flash', swapFlashEvents)
+swapFlashEvents.push(toolCall(1, 'bash'))
+checkSet('swap: flash promoted full catalog drops bash, keeps pwsh',
+  names(await runSwap(swapFlash)), ALL_TOOLS.filter((n) => n !== 'bash'))
+
+// Missing replacement: the original tool stays (graceful, no full fallback).
+const missingSwapListeners = harness({ replaceTools: { bash: 'no_such_tool' } })
+const missingSwapAssemble = missingSwapListeners.get('system-prompt/assemble')[0].fn
+const runMissingSwap = (agent) => missingSwapAssemble(null, { agent }, async () => assembled())
+const missingSwapEvents = []
+const missingSwapPro = makeAgent('deepseek-v4-pro', missingSwapEvents)
+missingSwapEvents.push(toolCall(1, 'bash'))
+check('swap: missing replacement keeps the original tool',
+  names(await runMissingSwap(missingSwapPro)), ['bash', 'str_replace_editor', 'dev_tool_search', 'skill_search', 'skill_load', 'glob', 'grep'])
 
 // ── Pro discipline hint (opt-in enabled in this harness) ───────────────
 const step1 = await preStep({ agent: pro }, async () => ({ kind: 'enter', messages: [{ role: 'user', source: { kind: 'human' } }] }))
@@ -210,6 +259,57 @@ check('instruction-hint stays silent in the fresh phase after a guardian retry',
 hintEvents.push(toolCall(5, 'bash'))
 check('instruction-hint re-fires after the guardian-retry attempt promotes',
   hintCount(await hintStep(hintAgent)), 1)
+
+// ── custom-bash post-anchor lock (Windows bash -> pwsh guidance) ───────
+const bashPlugin = await import('../preset/custom-bash.mjs')
+const makeBashHarness = (config) => {
+  const listeners = new Map()
+  const registered = []
+  const ctx = {
+    on: (event, fn) => {
+      if (!listeners.has(event)) listeners.set(event, [])
+      listeners.get(event).push(fn)
+    },
+    tools: { register: (def) => { registered.push(def); return () => {} } },
+    subprocess: {
+      resolveExecutable: async (cmd) => cmd,
+      spawn: () => ({
+        done: Promise.resolve({ exitCode: 0 }),
+        collected: {
+          stdout: { readFrom: () => ({ text: 'ok' }) },
+          stderr: { readFrom: () => ({ text: '' }) },
+        },
+      }),
+    },
+    logger: { info: () => {}, warn: () => {} },
+  }
+  bashPlugin.apply(ctx, config)
+  return { registered, listeners }
+}
+
+const bash1 = makeBashHarness({})
+const bashTool = bash1.registered[0]
+const bashEvents = []
+const bashAgent = { session: { id: 'bash-s1', events: bashEvents, header: { cwd: 'C:\\proj' } } }
+const runBash = () => bashTool.execute({ command: 'echo hi' }, { agent: bashAgent })
+const outcome = (promise) => promise.then(() => 'ran', () => 'threw')
+
+check('bash: executes during the fresh anchor phase', await outcome(runBash()), 'ran')
+bashEvents.push(toolCall(1, 'bash'))
+check('bash: locked after promotion', await outcome(runBash()), 'threw')
+bashEvents.push(toolCall(2, 'dev_tool_search', { toolNames: ['bash'] }))
+check('bash: explicit dev_tool_search unlock lifts the lock', await outcome(runBash()), 'ran')
+bashEvents.push(compactionEnd(3))
+check('bash: post-compaction controlled phase locks again', await outcome(runBash()), 'threw')
+bashEvents.push(guardianRetry(4))
+check('bash: guardian retry fresh phase allows bash again', await outcome(runBash()), 'ran')
+
+const bash2 = makeBashHarness({ lockAfterPromotion: false })
+const bashTool2 = bash2.registered[0]
+const bashEvents2 = [toolCall(1, 'bash')]
+const bashAgent2 = { session: { id: 'bash-s2', events: bashEvents2, header: {} } }
+check('bash: lockAfterPromotion false disables the lock',
+  await outcome(bashTool2.execute({ command: 'echo hi' }, { agent: bashAgent2 })), 'ran')
 
 // ── Guardian classifier ──────────────────────────────────────────────────
 check('classifier labels we-without-let-me as anchored',

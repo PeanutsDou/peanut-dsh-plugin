@@ -110,7 +110,7 @@ agent-presets:
 
 1. 首请求 `tools` 数组恰好为 `["bash", "str_replace_editor"]`；
 2. 首请求不含 AGENTS.md/CLAUDE.md 摘要与 `<available_skills>` 提醒；Pro 的 system 为 Minimal 原文，Flash 的 system 为神模式五锚；
-3. 首个 `tool/call` 或 `assistant/message` 之后：Pro 的下一 header 为常驻集（锚定对 + 三个发现工具），Flash 为完整 Standard 目录；
+3. 首个 `tool/call` 或 `assistant/message` 之后：Pro 的下一 header 为常驻集（锚定对 + 五个发现/搜索工具；Windows 上 `pwsh` 替换 `bash`），Flash 为完整 Standard 目录；
 4. anchor-guardian 命中浅首块时：当前 turn 被提前中止，出现一条 `surfaceOp: replace` 的 guardian retry 用户消息，随后自动开启新 turn，新请求 header 仍为 `["bash", "str_replace_editor"]`；
 5. 若配置了 `bootstrapMaxTokens`，首请求 `config.maxTokens` 记录该值且晋升后被剥离；
 6. 可选：统计 reasoning 词频，锚定生效时 `let me` 趋近于 0、`we` 高频、过程可见回复仅最终一次。
@@ -124,6 +124,8 @@ agent-presets:
 | 渠道模型 id 不含 pro/flash 字样 | `forcePath: pro` 或 `forcePath: flash` |
 | 首请求锚定不稳的加强手段 | `bootstrapMaxTokens: 1024`（注意 rc.6 预构建包可能覆盖） |
 | 长对话 / 大型工程的 Pro 防偏航 | `proDisciplineHint: true` |
+| Windows 晋升后用 pwsh 而非 Git Bash | `replaceTools: !!js "process.platform === 'win32' ? { bash: 'pwsh' } : {}"` |
+| Windows 晋升后仍需 Git Bash | `dev_tool_search` 显式解锁 `bash`，或设 `custom-bash` 行 `lockAfterPromotion: false` |
 | 纯 greenfield 创意构建（Pro） | 建议与官方 PTC/code preset 对照使用（见 §9） |
 
 ## 6. 配置说明
@@ -144,6 +146,7 @@ agent-presets:
 | `includeSubagents` | `false` | 子代理是否也走 bootstrap 阶段 |
 | `proDisciplineHint` | `false` | Pro 晋升后每 epoch 注入一次长任务纪律提示 |
 | `proDisciplineHintText` | 内置纪律提示文本 | 自定义提示内容 |
+| `replaceTools` | `{}` | 锚定阶段之后的工具替换映射（如 Windows `{ bash: 'pwsh' }`）；严格 bootstrap 对与显式解锁不受影响，替换目标缺失时保留原工具 |
 
 `anchor-guardian` 行：
 
@@ -156,6 +159,13 @@ agent-presets:
 | `retryOnCompaction` | `true` | 压缩后的“第二个首请求”是否同样受门控 |
 | `retryPrefix` | 内置文本 | 重试节点的引导文本 |
 | `wakeText` | `Continue from the instruction immediately above.` | 自动续跑的 wake 消息 |
+
+`custom-bash` 行（仅 Windows 生效）：
+
+| 键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `bashPath` | 自动探测 | 显式固定 Git Bash 可执行文件路径 |
+| `lockAfterPromotion` | `true` | 晋升后（及压缩受控期）`bash` 执行被拒并提示改用 `pwsh`；`dev_tool_search` 显式解锁 `bash` 后恢复 |
 
 ## 7. 设计原理
 
@@ -195,7 +205,9 @@ agent-presets:
     │ 首个 durable tool/call 或 assistant/message（promoteOn: either）
     ▼ 晋升（durable 事件派生，resume/reload 安全，rc.6 重扫兜底）
 ┌ 请求 #2+ ─ resident 阶段 ─────────────────────────────────────┐
-│ Pro   : bootstrap 对 + 三个发现工具 + 已解锁工具                 │
+│ Pro   : bootstrap 对 + 五个发现/搜索工具 + 已解锁工具             │
+│         （Windows 上 replaceTools 将 bash 换为 pwsh，且         │
+│          custom-bash 锁定 bash 执行并提示改用 pwsh）             │
 │ Flash : 完整 Standard 目录（默认；可配 resident）               │
 │ context : 注入恢复；instruction-hint 提示读取 AGENTS.md         │
 └───────────────────────────────────────────────────────────────┘
@@ -210,6 +222,7 @@ agent-presets:
 3. **批量解锁引导**：`dev_tool_search` 要求一次调用批量解锁，减少目录变更次数（每次变更都会断开 prompt 前缀缓存）。
 4. **提示按 epoch 注入**：instruction-hint 与 proDisciplineHint 以 `会话ID:压缩边界` 为键，每 epoch 注入一次，避免压缩折叠后静默丢失。
 5. **rc.6 重扫兜底**：晋升追踪在 durable 日志增长时自动重扫，晋升与压缩降级在无事件馈送时均正确。
+6. **bash 执行锁定**：晋升后 wire 目录已无 `bash`，但宿主运行时不拦截未广播的工具调用，Pro 锚定轨迹惯性会继续调 `bash`——`custom-bash` 在晋升/受控期直接拒绝执行并提示改用 pwsh（严格锚定期与显式解锁不受限）。
 
 ## 8. 测试
 
@@ -218,14 +231,14 @@ npm test
 # 或：node test/smoke.mjs && node test/guardian.smoke.mjs
 ```
 
-`test/smoke.mjs` 覆盖 28 项断言：双路径锚定、guardian 重试边界的 fresh 目录、晋升、解锁、压缩回退、注入剥离（含 time-context）、提示每 epoch 一次、无事件馈送的 rc.6 降级路径、降级目录。`test/guardian.smoke.mjs` 覆盖 7 项断言：浅首块 early-abort、surface 替换节点、followup 唤醒、重试后达标释放、分类器。全部通过输出 `ALL PASS`。
+`test/smoke.mjs` 覆盖 41 项断言：双路径锚定、guardian 重试边界的 fresh 目录、晋升、解锁、压缩回退、`replaceTools` 替换（严格期不替换 / 晋升后替换 / 显式解锁优先 / Flash 全目录 / 目标缺失降级）、custom-bash 锚定后锁定（晋升锁定 / 解锁恢复 / 压缩受控锁定 / guardian 重试放行 / 开关关闭）、注入剥离（含 time-context）、提示每 epoch 一次、无事件馈送的 rc.6 降级路径、降级目录。`test/guardian.smoke.mjs` 覆盖 7 项断言：浅首块 early-abort、surface 替换节点、followup 唤醒、重试后达标释放、分类器。全部通过输出 `ALL PASS`。
 
 ## 9. 已知限制
 
 - **证据边界**：98/99 与神模式结论来自单一题面 / 单任务对照（n=2 / n=1），不构成跨任务普适性证明；guardian 的自动重试在本地真实 loop 上验证过（surface 回滚 + followup/steer + early-abort 三条路径），但网页 UI 转录会保留被回滚的失败回合，且重试会按尝试次数增加首轮延迟与 token 成本；
 - **C4 残余风险**：Pro 在纯 greenfield 创意构建上存在 spec 侧反路由证据（Mario 6/10 vs PTC 10/10），预设层无代价方案，建议此类任务与官方 PTC/code preset 对照使用；
 - **C5 相关任务链**：Flash 静态引导在紧密相关的任务链上实测为负收益，已提供 `flashGuidance: false` 开关；
-- **宿主能力边界**：compaction 摘要质量、token 计量等属 dsh 宿主能力，agent-plane 无法控制；
+- **宿主能力边界**：compaction 摘要质量、token 计量等属 dsh 宿主能力，agent-plane 无法控制；宿主的工具执行不校验 wire 目录，`bash` 锁定依赖 `custom-bash` 自身的晋升感知（`lockAfterPromotion`）；
 - **上游遗留**：`custom-bash` 的 `timeoutMs` 配置被声明但未传入 spawn（继承自上游，行为无影响）。
 
 ## 10. 贡献指南

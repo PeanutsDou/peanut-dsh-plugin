@@ -32,6 +32,13 @@
  *     dev_tool_search. Dumping the full Standard catalog at promotion pulls
  *     the trajectory back to standard-like (the post-promotion regression);
  *     heavy tools stay one dev_tool_search call away.
+ *   - TOOL SWAPS (config `replaceTools`, default empty): applied to every
+ *     catalog AFTER the anchor phase — promoted resident set, post-compaction
+ *     controlled set, and the Flash promoted catalog (e.g. Windows maps
+ *     bash -> pwsh so the resident shell is PowerShell). The strict
+ *     bootstrap pair and tools the model explicitly unlocked via
+ *     dev_tool_search are never swapped; a missing replacement keeps the
+ *     original tool.
  *   - FLASH path (model id matches /flash/i): Flash is persona-dominated and
  *     catalog-immune (full 21-tool catalog still anchored minimal-like in
  *     the A2/B-matrix; ability is flat at ~92 across harnesses). The persona
@@ -98,6 +105,7 @@ const ALLOWED_KEYS = new Set([
   'includeSubagents',
   'proDisciplineHint',
   'proDisciplineHintText',
+  'replaceTools',
 ])
 
 /**
@@ -114,8 +122,8 @@ const DEFAULT_SUPPRESSED_SOURCES = ['skill-catalog', 'agent-instructions', 'time
 /** The official Minimal preset's exact tool pair (issue #11 anchor). */
 const DEFAULT_BOOTSTRAP_TOOLS = ['bash', 'str_replace_editor']
 
-/** Discovery tools always resident after promotion (the tool-search pattern). */
-const RESIDENT_DISCOVERY_TOOLS = ['dev_tool_search', 'skill_search', 'skill_load']
+/** Discovery and fast-search tools always resident after promotion (the tool-search pattern). */
+const RESIDENT_DISCOVERY_TOOLS = ['dev_tool_search', 'skill_search', 'skill_load', 'glob', 'grep']
 
 /**
  * Default Flash god-mode persona (SheberDavid's WEAK_FLASH, verbatim).
@@ -136,7 +144,7 @@ const DEFAULT_FLASH_PERSONA =
   'You are a helpful assistant.\n'
   + 'Before acting, decide the task type (build or fix) and adopt the matching '
   + 'style: build → hands-on production; fix → inspect-and-plan.\n'
-  + 'Before acting, briefly review what you have already done in this session and continue from where you left off; do not repeat completed steps. Do not run environment checks (echo, whoami, uname, node --version, date) or exhaustive grep/glob scans.\n'
+  + 'Before acting, briefly review what you have already done in this session and continue from where you left off; do not repeat completed steps. Do not run environment checks (echo, whoami, uname, node --version, date). For file and content search use the dedicated glob/grep tools; do not use bash grep -R/find for whole-repo scans.\n'
   + 'Think deeply about the architecture, edge cases, and integration points before writing. Do not spend reasoning on the environment or tooling. Produce when your information is complete, and end each reasoning block with a decision or an information need.'
 
 /**
@@ -240,6 +248,28 @@ function parseFlashPromotedCatalog(value) {
   throw new TypeError(`${name}: flashPromotedCatalog must be "full" or "resident"; got ${JSON.stringify(value)}`)
 }
 
+/**
+ * Validate the optional post-bootstrap tool swaps: a map of tool name to
+ * replacement name, applied to every catalog after the anchor phase. Identity
+ * entries are dropped. A replacement missing from the assembled catalog keeps
+ * the original tool at assemble time (graceful degradation, never the
+ * full-catalog fallback).
+ */
+function parseReplaceTools(value) {
+  if (value === undefined) return {}
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new TypeError(`${name}: replaceTools must be an object mapping tool names to replacement tool names`)
+  }
+  const map = {}
+  for (const [key, replacement] of Object.entries(value)) {
+    if (typeof replacement !== 'string' || replacement.length === 0) {
+      throw new TypeError(`${name}: replaceTools.${key} must be a non-empty string`)
+    }
+    if (key !== replacement) map[key] = replacement
+  }
+  return map
+}
+
 function optionalBoolean(value, field, fallback) {
   if (value === undefined) return fallback
   if (typeof value !== 'boolean') {
@@ -285,6 +315,7 @@ export function apply(ctx, config) {
   const includeSubagents = optionalBoolean(source.includeSubagents, 'includeSubagents', false)
   const proDisciplineHint = optionalBoolean(source.proDisciplineHint, 'proDisciplineHint', false)
   const proDisciplineHintText = optionalNonEmptyString(source.proDisciplineHintText, 'proDisciplineHintText', DEFAULT_PRO_DISCIPLINE_HINT)
+  const replaceTools = parseReplaceTools(source.replaceTools)
 
   const promotion = createEpochPromotion(promoteEvents, { includeSubagents, retryBoundary: isGuardianRetryBoundary })
   ctx.on('session/event', (session, event) => promotion.observe(session, event))
@@ -350,6 +381,39 @@ export function apply(ctx, config) {
     }
   }
 
+  /**
+   * Apply the configured post-bootstrap tool swaps to one assembled catalog.
+   * `fullByName` indexes the PRE-narrowing catalog, so a replacement the
+   * narrow dropped (e.g. pwsh in the resident phase) is looked up from the
+   * full set. `protectedNames` holds tools the model explicitly unlocked via
+   * dev_tool_search — an explicit unlock wins over a swap. A replacement
+   * missing from the full catalog keeps the original tool.
+   */
+  const applyToolSwaps = (catalog, fullByName, protectedNames) => {
+    if (Object.keys(replaceTools).length === 0) return catalog
+    const seen = new Set()
+    let changed = false
+    const tools = []
+    for (const tool of catalog.tools) {
+      if (seen.has(tool.name)) continue
+      seen.add(tool.name)
+      const replacement = replaceTools[tool.name]
+      if (replacement === undefined || protectedNames.has(tool.name)) {
+        tools.push(tool)
+        continue
+      }
+      const replacementTool = fullByName.get(replacement)
+      if (replacementTool === undefined || seen.has(replacement)) {
+        tools.push(tool)
+        continue
+      }
+      seen.add(replacement)
+      tools.push(replacementTool)
+      changed = true
+    }
+    return changed ? { ...catalog, tools } : catalog
+  }
+
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     // Downstream errors propagate untouched; only this filter's own logic is guarded.
     const assembled = await next()
@@ -366,26 +430,33 @@ export function apply(ctx, config) {
         : assembled.sections
       const withSections = sections === assembled.sections ? assembled : { ...assembled, sections }
 
+      const fullByName = new Map(assembled.tools.map((tool) => [tool.name, tool]))
       const status = promotion.status(agent)
       if (status.promoted) {
         // FLASH promoted: full Standard catalog (default) — Flash is
         // catalog-immune (A2/B-matrix); `resident` keeps the narrow set.
-        if (path === 'flash' && flashPromotedCatalog === 'full') return withSections
+        // Post-bootstrap swaps still apply (e.g. Windows pwsh for bash).
+        if (path === 'flash' && flashPromotedCatalog === 'full') {
+          return applyToolSwaps(withSections, fullByName, new Set())
+        }
         // PRO promoted (or Flash in resident mode): minimal resident set —
         // bootstrap pair + discovery tools + explicitly unlocked tools —
         // never a full Standard dump (the post-promotion regression fix).
-        const keep = new Set([...bootstrapTools, ...RESIDENT_DISCOVERY_TOOLS, ...unlockedFor(agent?.session, status.boundary)])
-        return keepTools(withSections, keep, false)
+        const unlocked = unlockedFor(agent?.session, status.boundary)
+        const keep = new Set([...bootstrapTools, ...RESIDENT_DISCOVERY_TOOLS, ...unlocked])
+        return applyToolSwaps(keepTools(withSections, keep, false), fullByName, unlocked)
       }
       // Controlled vs fresh phase: after a compaction the bootstrap pair
       // widens with the compaction work set so mid-task work can continue;
       // after a guardian retry (or before any boundary) it stays STRICT —
       // the retry must see the same Minimal-exact two-tool surface as a
-      // brand-new session.
+      // brand-new session. Swaps apply only to the controlled catalog: the
+      // fresh phase is still pre-anchor and must stay byte-exact.
       const { boundary, mode } = status
       const keep = new Set(bootstrapTools)
       if (mode === 'controlled') for (const toolName of compactionTools) keep.add(toolName)
-      return keepTools(withSections, keep, true)
+      const narrowed = keepTools(withSections, keep, true)
+      return mode === 'controlled' ? applyToolSwaps(narrowed, fullByName, new Set()) : narrowed
     } catch (error) {
       // A filter bug must never brick a session: degrade to the full catalog.
       warnOnce(`${name}: bootstrap filter failed, exposing the full catalog: ${String((error && error.message) || error)}`)
