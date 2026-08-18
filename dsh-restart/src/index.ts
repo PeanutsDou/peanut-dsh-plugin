@@ -120,7 +120,7 @@ function knownGoodManifestPath(): string {
   return path.join(knownGoodSnapshotDir(), SNAPSHOT_MANIFEST)
 }
 
-/** Relative files that can brick startup when broken: profile patches + user settings. */
+/** Relative files that can brick startup when broken: profile patches + bundle stacks + user settings. */
 function snapshotSources(): Array<{ abs: string; rel: string }> {
   const out: Array<{ abs: string; rel: string }> = []
   const home = homeDir()
@@ -130,6 +130,8 @@ function snapshotSources(): Array<{ abs: string; rel: string }> {
       if (!entry.isDirectory()) continue
       const patch = path.join(profiles, entry.name, 'cordis.patch.yml')
       if (fs.existsSync(patch)) out.push({ abs: patch, rel: `profiles/${entry.name}/cordis.patch.yml` })
+      const packageJson = path.join(profiles, entry.name, 'package.json')
+      if (fs.existsSync(packageJson)) out.push({ abs: packageJson, rel: `profiles/${entry.name}/package.json` })
     }
   } catch { /* no profiles dir yet */ }
   const settings = path.join(home, 'settings.yaml')
