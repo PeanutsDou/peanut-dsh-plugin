@@ -31,9 +31,6 @@ function makeContext(options = {}) {
   const archived = []
   const followedUp = []
   const disposed = []
-  const workspaceState = { archivedSessionIds: [] }
-  const attached = []
-  const renamed = []
   let composeCalls = 0
   const requestHooks = []
 
@@ -120,16 +117,7 @@ function makeContext(options = {}) {
       archiveSession: async (id) => {
         if (options.archiveError !== undefined) throw options.archiveError
         archived.push(id)
-        if (!workspaceState.archivedSessionIds.includes(id)) workspaceState.archivedSessionIds.push(id)
       },
-      resolveByPath: async (_path) => ({ path: _path, attachSession: async (id) => { attached.push({ path: _path, sessionId: id }) } }),
-      requireState() { return { ...workspaceState } },
-      async setState(next) {
-        workspaceState.archivedSessionIds = [...(next.archivedSessionIds ?? [])]
-      },
-    },
-    sessionTitle: {
-      rename(session, title) { renamed.push({ sessionId: session.id, title }) },
     },
     sessionQuery: {
       readSession: async (id) => ({
@@ -160,7 +148,7 @@ function makeContext(options = {}) {
     },
     on() { return () => {} },
   }
-  return { ctx, routes, effects, created, archived, followedUp, disposed, getComposeCalls: () => composeCalls, requestHooks, parentAgent, workspaceState, renamed, attached }
+  return { ctx, routes, effects, created, archived, followedUp, disposed, getComposeCalls: () => composeCalls, requestHooks, parentAgent }
 }
 
 test('tutor host creates a tool-less archived child, forces effort live, and disposes on close', async () => {
@@ -331,47 +319,4 @@ test('invalid translate targets are rejected at the API boundary', async () => {
   const bad = await callRoute(route, { windowId: started.body.value.windowId, translateTarget: 'klingon' }, 'tutor.translate')
   assert.equal(bad.body.ok, false)
   assert.equal(bad.body.error.code, 'bad-request')
-})
-
-test('promote moves an archived tutor child into the session list with a pinned title', async () => {
-  const { ctx, routes, disposed, workspaceState, renamed, attached } = makeContext()
-  apply(ctx)
-  const route = routes.get('/plugins/dsh-selection-tutor/api')
-  const started = await callRoute(route, { parentSessionId: 'parent-1', mode: 'explain', selectionText: 'context manager', autoSend: false })
-  assert.equal(started.body.ok, true)
-  const childId = started.body.value.windowId
-  assert.ok(workspaceState.archivedSessionIds.includes(childId), 'tutor children start archived')
-
-  const promoted = await callRoute(route, { windowId: childId, title: '我的学习笔记' }, 'tutor.promote')
-  assert.equal(promoted.body.ok, true)
-  assert.equal(promoted.body.value.childSessionId, childId)
-  assert.equal(promoted.body.value.title, '我的学习笔记')
-  assert.equal(workspaceState.archivedSessionIds.includes(childId), false, 'promote removes the archive entry')
-  assert.equal(attached.length, 1, 'promote attaches the child to its parent workspace')
-  assert.equal(attached[0].sessionId, childId)
-  assert.equal(attached[0].path, 'D:\\demo')
-  assert.equal(renamed.length, 1)
-  assert.equal(renamed[0].sessionId, childId)
-  assert.equal(renamed[0].title, '我的学习笔记')
-  assert.deepEqual(disposed, [childId], 'the in-memory tutor handle is disposed after promotion')
-
-  const after = await callRoute(route, { windowId: childId }, 'tutor.history')
-  assert.equal(after.body.ok, false)
-  assert.equal(after.body.error.code, 'window-unavailable')
-})
-
-test('promote refuses to run while a turn is still open', async () => {
-  const openEvents = [
-    { type: 'turn/start', time: 1, data: { turn: 1 } },
-    { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'x' }] } },
-  ]
-  const { ctx, routes } = makeContext({ readEvents: openEvents })
-  apply(ctx)
-  const route = routes.get('/plugins/dsh-selection-tutor/api')
-  const started = await callRoute(route, { parentSessionId: 'parent-1', mode: 'explain', selectionText: 'x', autoSend: false })
-  const history = await callRoute(route, { windowId: started.body.value.windowId }, 'tutor.history')
-  assert.equal(history.body.value.running, true)
-  const busy = await callRoute(route, { windowId: started.body.value.windowId, title: 'x' }, 'tutor.promote')
-  assert.equal(busy.body.ok, false)
-  assert.equal(busy.body.error.code, 'busy')
 })

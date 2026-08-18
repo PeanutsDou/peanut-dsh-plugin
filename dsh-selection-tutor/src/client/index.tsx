@@ -1,4 +1,4 @@
-/**
+﻿/**
  * dsh-selection-tutor — client half.
  *
  * - Listens for text selection in the main conversation and shows a floating
@@ -265,7 +265,6 @@ function TutorWindow({ win, onClose, pinned, onTogglePin }: { win: StartResult &
   const [error, setError] = useState<string | null>(null)
   const [closing, setClosing] = useState(false)
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
-  const [migrating, setMigrating] = useState(false)
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; origin: WindowPosition } | null>(null)
   const resizeRef = useRef<{ pointerId: number; startX: number; startY: number; origin: WindowPosition } | null>(null)
   const sendingRef = useRef(false)
@@ -403,7 +402,7 @@ function TutorWindow({ win, onClose, pinned, onTogglePin }: { win: StartResult &
   }
 
   const close = async (): Promise<void> => {
-    if (closingRef.current || migrating) return
+    if (closingRef.current) return
     if (running) {
       const ok = window.confirm('小窗正在生成内容，关闭会取消当前回答并销毁这个临时分支。确定关闭吗？')
       if (!ok) return
@@ -432,32 +431,6 @@ function TutorWindow({ win, onClose, pinned, onTogglePin }: { win: StartResult &
     } catch {
       setError('复制失败，请手动选择文本复制')
     }
-  }
-
-  const migrate = async (): Promise<void> => {
-    if (migrating || running || closingRef.current) return
-    const modePrefix = win.mode === 'translate' ? '翻译' : '解释'
-    const preview = win.selectionText.replace(/\s+/g, ' ').trim().slice(0, 36)
-    const suggested = `${modePrefix} · ${preview === '' ? '选中内容' : preview}`
-    const title = window.prompt('将这个学习小窗迁移为会话列表里的独立对话。会话标题：', suggested)
-    if (title === null) return
-    const normalizedTitle = title.trim()
-    if (normalizedTitle === '') {
-      setError('会话标题不能为空')
-      return
-    }
-    setMigrating(true)
-    setError(null)
-    const result = await api.promote({ windowId: win.windowId, title: normalizedTitle })
-    if (!result.ok) {
-      setMigrating(false)
-      setError(result.error.message)
-      return
-    }
-    closingRef.current = true
-    setClosing(true)
-    setError(null)
-    onClose()
   }
 
   closeRef.current = close
@@ -559,9 +532,8 @@ function TutorWindow({ win, onClose, pinned, onTogglePin }: { win: StartResult &
         </div>
           <div className="dsh-tutor-title-actions">
             <button type="button" className={pinned ? 'active' : ''} aria-pressed={pinned} onPointerDown={event => { event.stopPropagation() }} onClick={onTogglePin}>{pinned ? '已置顶' : '置顶'}</button>
-            <button type="button" disabled={running || migrating || closing} onPointerDown={event => { event.stopPropagation() }} onClick={() => { void migrate() }}>迁移</button>
           </div>
-        <button type="button" className="dsh-tutor-close" disabled={closing || migrating} onPointerDown={event => { event.stopPropagation() }} onClick={() => { void close() }}>关闭</button>
+        <button type="button" className="dsh-tutor-close" disabled={closing} onPointerDown={event => { event.stopPropagation() }} onClick={() => { void close() }}>关闭</button>
       </div>
       <div className="dsh-tutor-meta">
         <span>模型：{win.model}（继承主会话，无工具只读）</span>

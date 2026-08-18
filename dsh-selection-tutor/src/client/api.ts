@@ -1,4 +1,4 @@
-/** Browser API client for the host /plugins/dsh-selection-tutor/api routes. */
+﻿/** Browser API client for the host /plugins/dsh-selection-tutor/api routes. */
 import { TUTOR_PREFS_DEFAULTS, type TutorEffort, type TutorTranslateTarget } from '../settings-shared.ts'
 
 export type { TutorEffort, TutorTranslateTarget }
@@ -72,8 +72,6 @@ export const api = {
     call<{ accepted: true; reasoningEffort: TutorEffort }>('tutor.effort', args),
   translateTarget: (args: { windowId: string; translateTarget: TutorTranslateTarget }) =>
     call<{ accepted: true; translateTarget: TutorTranslateTarget }>('tutor.translateTarget', args),
-  promote: (args: { windowId: string; title?: string }) =>
-    call<{ accepted: true; childSessionId: string; title: string }>('tutor.promote', args),
   dispose: (args: { windowId: string }) =>
     call<{ accepted: true }>('tutor.dispose', args),
   settingsGet: () => call<{ value?: unknown; revision?: number }>('settings.get', {}),
