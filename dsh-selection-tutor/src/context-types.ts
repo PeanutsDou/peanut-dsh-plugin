@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Structural types for the DSH cordis services this plugin touches. The
  * browser bundle keeps value imports limited to platform modules, so these
  * declarations live in a shared type-only file.
@@ -77,6 +77,16 @@ export interface TutorWorkspaceRegistry {
   archiveSession(sessionId: string): Promise<void>
 }
 
+/** Runtime-only surface used by promote(): removes one id from the archive set. */
+export interface TutorWorkspaceRegistryInternal extends TutorWorkspaceRegistry {
+  requireState(): { archivedSessionIds?: readonly string[]; [key: string]: unknown }
+  setState(state: unknown): Promise<void>
+}
+
+export interface TutorSessionTitleService {
+  rename(session: TutorSession, title: string): { title?: string }
+}
+
 export interface TutorSessionQuery {
   readSession(sessionId: string): Promise<{ session: TutorSessionHeader; events: TutorSessionEvent[] }>
 }
@@ -128,6 +138,7 @@ declare module 'cordis' {
     sessions: TutorSessionStore & TutorSessionsService
     agents: TutorAgentsService
     workspaceRegistry: TutorWorkspaceRegistry
+    sessionTitle: TutorSessionTitleService
     sessionQuery: TutorSessionQuery
     permissionPresets: TutorPermissionPresets
     agentPresets: TutorAgentPresets

@@ -32,6 +32,7 @@ const ERROR_AUTO_DISMISS_MS = 8000
 const SELECTION_MENU_WIDTH = 200
 const SELECTION_MENU_HEIGHT = 38
 const SELECTION_MENU_GAP = 8
+const PIN_KEY = 'dsh-selection-tutor-pinned'
 
 const EFFORT_LABELS: Record<TutorEffort, string> = {
   off: '关闭思考',
@@ -95,6 +96,12 @@ function ensureStyles(): void {
 .dsh-tutor-title-selection{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary,#9aa2b1);font-size:12px}
 .dsh-tutor-close{appearance:none;border:1px solid transparent;border-radius:7px;padding:2px 9px;background:transparent;color:var(--dsw-alias-label-tertiary,#9aa2b1);cursor:pointer;font:inherit}
 .dsh-tutor-close:hover{background:color-mix(in srgb,var(--dsw-alias-label-error,#ef4444) 16%,transparent);color:var(--dsw-alias-label-error,#ef4444)}
+ .dsh-tutor-window.pinned{box-shadow:0 22px 70px rgba(0,0,0,.55),0 0 0 1px color-mix(in srgb,var(--dsw-alias-brand-primary,#3b82f6) 55%,transparent)}
+ .dsh-tutor-title-actions{display:flex;align-items:center;gap:6px;flex:none}
+ .dsh-tutor-title-actions button{appearance:none;border:1px solid transparent;border-radius:7px;padding:2px 9px;background:transparent;color:var(--dsw-alias-label-tertiary,#9aa2b1);cursor:pointer;font:inherit;white-space:nowrap}
+ .dsh-tutor-title-actions button:hover{background:var(--dsw-alias-bg-layer-3,#2a2e38);border-color:var(--dsw-alias-border-l2,#3a3f4b)}
+ .dsh-tutor-title-actions button.active{color:var(--dsw-alias-brand-primary,#7aa2ff);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary,#3b82f6) 40%,transparent)}
+ .dsh-tutor-title-actions button:disabled{opacity:.45;cursor:default}
 .dsh-tutor-meta{display:flex;align-items:center;gap:10px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l2,#3a3f4b);font-size:12px;color:var(--dsw-alias-label-tertiary,#9aa2b1);background:var(--dsw-alias-bg-layer-2,#1e2128)}
 .dsh-tutor-meta select{appearance:none;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:7px;padding:2px 8px;background:var(--dsw-alias-bg-layer-3,#2a2e38);color:inherit;font:inherit}
 .dsh-tutor-messages{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;min-height:0}
@@ -247,7 +254,7 @@ function SelectionMenu({ current, onPick }: { current: string | undefined; onPic
   )
 }
 
-function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; selectionText: string; parentSessionId: string }; onClose: () => void }) {
+function TutorWindow({ win, onClose, pinned, onTogglePin }: { win: StartResult & { mode: TutorMode; selectionText: string; parentSessionId: string }; onClose: () => void; pinned: boolean; onTogglePin: () => void }) {
   const [position, setPosition] = useState<WindowPosition>(() => readPosition())
   const [messages, setMessages] = useState<TutorMessage[]>([])
   const [draft, setDraft] = useState('')
@@ -258,6 +265,7 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
   const [error, setError] = useState<string | null>(null)
   const [closing, setClosing] = useState(false)
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
+  const [migrating, setMigrating] = useState(false)
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; origin: WindowPosition } | null>(null)
   const resizeRef = useRef<{ pointerId: number; startX: number; startY: number; origin: WindowPosition } | null>(null)
   const sendingRef = useRef(false)
@@ -395,9 +403,12 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
   }
 
   const close = async (): Promise<void> => {
-    if (closingRef.current) return
+    if (closingRef.current || migrating) return
     if (running) {
       const ok = window.confirm('小窗正在生成内容，关闭会取消当前回答并销毁这个临时分支。确定关闭吗？')
+      if (!ok) return
+    } else if (pinned) {
+      const ok = window.confirm('小窗已置顶，关闭会销毁这个临时分支。确定关闭吗？')
       if (!ok) return
     }
     closingRef.current = true
@@ -421,6 +432,32 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
     } catch {
       setError('复制失败，请手动选择文本复制')
     }
+  }
+
+  const migrate = async (): Promise<void> => {
+    if (migrating || running || closingRef.current) return
+    const modePrefix = win.mode === 'translate' ? '翻译' : '解释'
+    const preview = win.selectionText.replace(/\s+/g, ' ').trim().slice(0, 36)
+    const suggested = `${modePrefix} · ${preview === '' ? '选中内容' : preview}`
+    const title = window.prompt('将这个学习小窗迁移为会话列表里的独立对话。会话标题：', suggested)
+    if (title === null) return
+    const normalizedTitle = title.trim()
+    if (normalizedTitle === '') {
+      setError('会话标题不能为空')
+      return
+    }
+    setMigrating(true)
+    setError(null)
+    const result = await api.promote({ windowId: win.windowId, title: normalizedTitle })
+    if (!result.ok) {
+      setMigrating(false)
+      setError(result.error.message)
+      return
+    }
+    closingRef.current = true
+    setClosing(true)
+    setError(null)
+    onClose()
   }
 
   closeRef.current = close
@@ -514,13 +551,17 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
   }, [messages])
 
   return (
-    <section role="dialog" aria-label={`${modeLabel}学习小窗`} className="dsh-tutor-window" data-dsh-selection-tutor="" style={{ left: position.left, top: position.top, width: position.width, height: position.height }}>
+    <section role="dialog" aria-label={`${modeLabel}学习小窗`} className={`dsh-tutor-window${pinned ? ' pinned' : ''}`} data-dsh-selection-tutor="" style={{ left: position.left, top: position.top, width: position.width, height: position.height }}>
       <div className="dsh-tutor-title" onPointerDown={onTitlePointerDown} onPointerMove={onTitlePointerMove} onPointerUp={onTitlePointerUp} onPointerCancel={onTitlePointerUp} onLostPointerCapture={onTitlePointerLost}>
         <div className="dsh-tutor-title-main">
           <span className="dsh-tutor-title-mode">{modeLabel}小窗</span>
           <span className="dsh-tutor-title-selection">{selectionPreview === '' ? '（空选择）' : `“${selectionPreview}”`}</span>
         </div>
-        <button type="button" className="dsh-tutor-close" disabled={closing} onPointerDown={event => { event.stopPropagation() }} onClick={() => { void close() }}>关闭</button>
+          <div className="dsh-tutor-title-actions">
+            <button type="button" className={pinned ? 'active' : ''} aria-pressed={pinned} onPointerDown={event => { event.stopPropagation() }} onClick={onTogglePin}>{pinned ? '已置顶' : '置顶'}</button>
+            <button type="button" disabled={running || migrating || closing} onPointerDown={event => { event.stopPropagation() }} onClick={() => { void migrate() }}>迁移</button>
+          </div>
+        <button type="button" className="dsh-tutor-close" disabled={closing || migrating} onPointerDown={event => { event.stopPropagation() }} onClick={() => { void close() }}>关闭</button>
       </div>
       <div className="dsh-tutor-meta">
         <span>模型：{win.model}（继承主会话，无工具只读）</span>
@@ -620,14 +661,25 @@ function TutorRoot({ ctx }: { ctx: Context }): JSX.Element {
   )
   const [win, setWin] = useState<ActiveWindow | null>(null)
   const [startError, setStartError] = useState<string | null>(null)
+  const [pinned, setPinned] = useState<boolean>(() => {
+    try { return localStorage.getItem(PIN_KEY) === '1' } catch { return false }
+  })
   const startingRef = useRef(false)
 
+  const togglePin = useCallback((): void => {
+    setPinned(current => {
+      const next = !current
+      try { localStorage.setItem(PIN_KEY, next ? '1' : '0') } catch { /* storage unavailable */ }
+      return next
+    })
+  }, [])
+
   useEffect(() => {
-    if (win !== null && current !== win.parentSessionId) {
+    if (win !== null && current !== win.parentSessionId && !pinned) {
       void api.dispose({ windowId: win.windowId })
       setWin(null)
     }
-  }, [current, win])
+  }, [current, win, pinned])
 
   const pick = useCallback(async (mode: TutorMode, text: string): Promise<void> => {
     const parentSessionId = ctx.sessions.list.getSnapshot().current
@@ -657,7 +709,7 @@ function TutorRoot({ ctx }: { ctx: Context }): JSX.Element {
         </div>
       ) : null}
       <SelectionMenu current={win === null ? current : undefined} onPick={(mode, text) => { void pick(mode, text) }} />
-      {win !== null ? <TutorWindow win={win} onClose={close} /> : null}
+      {win !== null ? <TutorWindow win={win} onClose={close} pinned={pinned} onTogglePin={togglePin} /> : null}
     </>
   )
 }

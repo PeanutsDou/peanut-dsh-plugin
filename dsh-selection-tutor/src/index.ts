@@ -13,7 +13,7 @@
  * never resurrects child sessions.
  */
 import { randomUUID } from 'node:crypto'
-import type { Context, TutorAgent, TutorAgentHandle, TutorSessionEvent } from './context-types.ts'
+import type { Context, TutorAgent, TutorAgentHandle, TutorSessionEvent, TutorWorkspaceRegistryInternal } from './context-types.ts'
 import { SettingsConflictError, settingsNamespace, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from 'schemastery'
 import {
@@ -32,7 +32,7 @@ import { isTrustedApiRequest } from './trust-fence.ts'
 import { readJsonBody, requireString, TutorError, writeError, writeJson, writeOk } from './wire.ts'
 
 export const name = 'dsh-selection-tutor'
-export const inject = ['webServer', 'agents', 'workspaceRegistry', 'sessionQuery']
+export const inject = ['webServer', 'agents', 'workspaceRegistry', 'sessionQuery', 'sessionTitle']
 
 type TutorMode = 'explain' | 'translate'
 
@@ -93,6 +93,12 @@ const TURN_START_GRACE_MS = 3000
 function clampSelection(text: string): string {
   const trimmed = text.trim()
   return trimmed.length <= MAX_SELECTION_CHARS ? trimmed : `${trimmed.slice(0, MAX_SELECTION_CHARS)}\n…[选中内容过长，已截断]`
+}
+
+function migrationTitle(record: TutorRecord): string {
+  const preview = record.selectionText.replace(/\s+/g, ' ').trim().slice(0, 36)
+  const prefix = record.mode === 'translate' ? '翻译' : '解释'
+  return `${prefix} · ${preview === '' ? '选中内容' : preview}`
 }
 
 function translateDirective(target: TutorTranslateTarget): string {
@@ -493,6 +499,44 @@ function buildApi(ctx: Context, tutors: Map<string, TutorRecord>, getSettings: (
     return { accepted: true, promptSent: true }
   }
 
+  const promote = async (payload: unknown): Promise<{ accepted: true; childSessionId: string; title: string }> => {
+    const windowId = requireString(payload, 'windowId')
+    const record = recordOf(windowId)
+    record.lastSeenAt = Date.now()
+    if (record.running) {
+      throw new TutorError('busy', '当前回答尚未结束，请先停止后再迁移到会话列表', 409)
+    }
+
+    const rawTitle = (payload as { title?: unknown }).title
+    const title = typeof rawTitle === 'string' ? rawTitle.trim() : ''
+    const normalizedTitle = title === '' ? migrationTitle(record) : title
+
+    // Pin a human-readable title before the session becomes visible.
+    try {
+      ctx.sessionTitle.rename(record.handle.agent.session, normalizedTitle)
+    } catch (error) {
+      throw new TutorError('promote-failed', `无法为迁移会话设置标题：${error instanceof Error ? error.message : String(error)}`, 500)
+    }
+
+    // workspaceRegistry exposes no public unarchive method yet; promote mirrors
+    // archiveSession and durably drops this id from the registry-global archive set.
+    const registry = ctx.workspaceRegistry as unknown as TutorWorkspaceRegistryInternal
+    try {
+      const state = registry.requireState()
+      const archived = Array.isArray(state.archivedSessionIds) ? state.archivedSessionIds : []
+      if (archived.includes(windowId)) {
+        await registry.setState({ ...state, archivedSessionIds: archived.filter(id => id !== windowId) })
+      }
+    } catch (error) {
+      throw new TutorError('promote-failed', `无法将会话移出归档：${error instanceof Error ? error.message : String(error)}`, 500)
+    }
+
+    // The session log is durable and now visible; the in-memory tutor window is done.
+    await disposeRecord(record)
+    return { accepted: true, childSessionId: record.childSessionId, title: normalizedTitle }
+  }
+
+
   const history = async (payload: unknown): Promise<{ windowId: string; running: boolean; messages: TranscriptMessage[] }> => {
     const windowId = requireString(payload, 'windowId')
     const record = recordOf(windowId)
@@ -560,6 +604,7 @@ function buildApi(ctx: Context, tutors: Map<string, TutorRecord>, getSettings: (
     'tutor.stop': stop,
     'tutor.effort': effort,
     'tutor.translateTarget': translateTarget,
+    'tutor.promote': promote,
     'tutor.dispose': dispose,
     'settings.get': () => getSettings()?.get() ?? { value: undefined, revision: undefined },
     'settings.update': async (payload: unknown) => {
