@@ -32,6 +32,7 @@ function makeContext(options = {}) {
   const followedUp = []
   const disposed = []
   const workspaceState = { archivedSessionIds: [] }
+  const attached = []
   const renamed = []
   let composeCalls = 0
   const requestHooks = []
@@ -121,6 +122,7 @@ function makeContext(options = {}) {
         archived.push(id)
         if (!workspaceState.archivedSessionIds.includes(id)) workspaceState.archivedSessionIds.push(id)
       },
+      resolveByPath: async (_path) => ({ path: _path, attachSession: async (id) => { attached.push({ path: _path, sessionId: id }) } }),
       requireState() { return { ...workspaceState } },
       async setState(next) {
         workspaceState.archivedSessionIds = [...(next.archivedSessionIds ?? [])]
@@ -158,7 +160,7 @@ function makeContext(options = {}) {
     },
     on() { return () => {} },
   }
-  return { ctx, routes, effects, created, archived, followedUp, disposed, getComposeCalls: () => composeCalls, requestHooks, parentAgent, workspaceState, renamed }
+  return { ctx, routes, effects, created, archived, followedUp, disposed, getComposeCalls: () => composeCalls, requestHooks, parentAgent, workspaceState, renamed, attached }
 }
 
 test('tutor host creates a tool-less archived child, forces effort live, and disposes on close', async () => {
@@ -332,7 +334,7 @@ test('invalid translate targets are rejected at the API boundary', async () => {
 })
 
 test('promote moves an archived tutor child into the session list with a pinned title', async () => {
-  const { ctx, routes, disposed, workspaceState, renamed } = makeContext()
+  const { ctx, routes, disposed, workspaceState, renamed, attached } = makeContext()
   apply(ctx)
   const route = routes.get('/plugins/dsh-selection-tutor/api')
   const started = await callRoute(route, { parentSessionId: 'parent-1', mode: 'explain', selectionText: 'context manager', autoSend: false })
@@ -345,6 +347,9 @@ test('promote moves an archived tutor child into the session list with a pinned 
   assert.equal(promoted.body.value.childSessionId, childId)
   assert.equal(promoted.body.value.title, '我的学习笔记')
   assert.equal(workspaceState.archivedSessionIds.includes(childId), false, 'promote removes the archive entry')
+  assert.equal(attached.length, 1, 'promote attaches the child to its parent workspace')
+  assert.equal(attached[0].sessionId, childId)
+  assert.equal(attached[0].path, 'D:\\demo')
   assert.equal(renamed.length, 1)
   assert.equal(renamed[0].sessionId, childId)
   assert.equal(renamed[0].title, '我的学习笔记')

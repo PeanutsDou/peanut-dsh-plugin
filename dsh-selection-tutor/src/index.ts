@@ -518,6 +518,21 @@ function buildApi(ctx: Context, tutors: Map<string, TutorRecord>, getSettings: (
       throw new TutorError('promote-failed', `无法为迁移会话设置标题：${error instanceof Error ? error.message : String(error)}`, 500)
     }
 
+    // Tutor children are archived immediately after creation, before workspace
+    // accounting normally notices them. Attach the child to the parent session's
+    // workspace first, otherwise unarchiving leaves it as an invisible Ungrouped
+    // session and the conversation list never shows it.
+    const childCwd = record.handle.agent.session.header.cwd
+    if (typeof childCwd === 'string' && childCwd !== '') {
+      try {
+        const workspace = await ctx.workspaceRegistry.resolveByPath(childCwd)
+        await workspace?.attachSession(windowId)
+      } catch (error) {
+        throw new TutorError('promote-failed', `无法将迁移会话登记到工作区：${error instanceof Error ? error.message : String(error)}`, 500)
+      }
+    }
+
+
     // workspaceRegistry exposes no public unarchive method yet; promote mirrors
     // archiveSession and durably drops this id from the registry-global archive set.
     const registry = ctx.workspaceRegistry as unknown as TutorWorkspaceRegistryInternal

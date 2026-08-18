@@ -73,8 +73,14 @@ export interface TutorAgentsService {
   create(options: TutorCreateAgentOptions): Promise<TutorAgentHandle>
 }
 
+export interface TutorWorkspaceEntity {
+  path: string
+  attachSession(sessionId: string): Promise<void>
+}
+
 export interface TutorWorkspaceRegistry {
   archiveSession(sessionId: string): Promise<void>
+  resolveByPath(path: string): Promise<TutorWorkspaceEntity | undefined>
 }
 
 /** Runtime-only surface used by promote(): removes one id from the archive set. */
