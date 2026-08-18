@@ -11,13 +11,13 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { createRoot, type Root } from 'react-dom/client'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from '../context-types.ts'
-import { normalizeTutorEffort, TUTOR_EFFORTS } from '../settings-shared.ts'
-import { api, disposeKeepalive, TUTOR_DEFAULT_EFFORT, type StartResult, type TutorBlock, type TutorEffort, type TutorMessage, type TutorMode } from './api.ts'
+import { normalizeTutorEffort, normalizeTutorTranslateTarget, TUTOR_EFFORTS, TUTOR_PREFS_DEFAULTS, TUTOR_TRANSLATE_TARGETS, type TutorTranslateTarget } from '../settings-shared.ts'
+import { api, disposeKeepalive, TUTOR_DEFAULT_EFFORT, TUTOR_DEFAULT_TRANSLATE_TARGET, type StartResult, type TutorBlock, type TutorEffort, type TutorMessage, type TutorMode } from './api.ts'
 
 export const name = 'dsh-selection-tutor-client'
 export const inject = ['sessions', 'slots']
 
-interface SelectionAnchor { text: string; x: number; y: number }
+interface SelectionAnchor { text: string; x: number; y: number; placement: 'above' | 'below'; charCount: number }
 interface WindowPosition { left: number; top: number; width: number; height: number }
 
 const STYLE_ID = 'dsh-selection-tutor-styles'
@@ -26,11 +26,28 @@ const DEFAULT_POSITION: WindowPosition = { left: 96, top: 72, width: 440, height
 const MIN_WIDTH = 360
 const MIN_HEIGHT = 260
 const MAX_FRACTION = 0.86
+const POLL_RUNNING_MS = 700
+const POLL_IDLE_MS = 5000
+const ERROR_AUTO_DISMISS_MS = 8000
+const SELECTION_MENU_WIDTH = 200
+const SELECTION_MENU_HEIGHT = 38
+const SELECTION_MENU_GAP = 8
 
 const EFFORT_LABELS: Record<TutorEffort, string> = {
   off: '关闭思考',
   high: '高',
   max: '最大',
+}
+
+const TARGET_LABELS: Record<TutorTranslateTarget, string> = {
+  auto: '自动检测',
+  en: '英文',
+  zh: '中文',
+  ja: '日语',
+  ko: '韩语',
+  fr: '法语',
+  de: '德语',
+  es: '西班牙语',
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -65,7 +82,9 @@ function ensureStyles(): void {
   const style = document.createElement('style')
   style.id = STYLE_ID
   style.textContent = `
-.dsh-tutor-menu{position:fixed;z-index:2147483000;display:flex;gap:6px;padding:5px;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#1e2128);box-shadow:0 10px 30px rgba(0,0,0,.3);font:12px system-ui;transform:translate(-50%,-100%)}
+.dsh-tutor-menu{position:fixed;z-index:2147483000;display:flex;align-items:center;gap:6px;padding:5px;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#1e2128);box-shadow:0 10px 30px rgba(0,0,0,.3);font:12px system-ui;transform:translate(-50%,-100%)}
+.dsh-tutor-menu.below{transform:translate(-50%,0)}
+.dsh-tutor-menu .dsh-tutor-count{flex:none;padding:0 2px;color:var(--dsw-alias-label-tertiary,#9aa2b1);white-space:nowrap}
 .dsh-tutor-menu button{appearance:none;border:1px solid transparent;border-radius:7px;padding:5px 12px;background:transparent;color:var(--dsw-alias-label-primary,#e7e9ee);cursor:pointer;font:inherit}
 .dsh-tutor-menu button:hover{background:var(--dsw-alias-bg-layer-3,#2a2e38);border-color:var(--dsw-alias-border-l2,#3a3f4b)}
 .dsh-tutor-window{position:fixed;z-index:2147483001;display:flex;flex-direction:column;min-width:320px;min-height:240px;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:14px;background:var(--dsw-alias-bg-layer-2,#1e2128);color:var(--dsw-alias-label-primary,#e7e9ee);box-shadow:0 22px 70px rgba(0,0,0,.45);overflow:hidden;font:13px/1.6 system-ui}
@@ -84,14 +103,19 @@ function ensureStyles(): void {
 .dsh-tutor-msg.assistant{align-self:flex-start;background:var(--dsw-alias-bg-layer-3,#2a2e38);border:1px solid var(--dsw-alias-border-l2,#3a3f4b)}
 .dsh-tutor-msg.reasoning{color:var(--dsw-alias-label-tertiary,#9aa2b1);font-size:12px;white-space:pre-wrap}
 .dsh-tutor-empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#9aa2b1)}
- .dsh-tutor-tool{margin:2px 0;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:8px;padding:4px 8px;background:var(--dsw-alias-bg-layer-2,#1e2128);font-size:12px}.dsh-tutor-tool summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}.dsh-tutor-tool pre{margin:6px 0 0;padding:6px;border-radius:6px;background:var(--dsw-alias-bg-layer-3,#2a2e38);white-space:pre-wrap;overflow:auto;max-height:160px}.dsh-tutor-error{margin:0 12px 8px;padding:7px 10px;border-radius:8px;background:color-mix(in srgb,var(--dsw-alias-label-error,#ef4444) 14%,transparent);color:var(--dsw-alias-label-error,#ef4444);font-size:12px}
+ .dsh-tutor-source{margin:0;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:10px;padding:6px 10px;background:var(--dsw-alias-bg-layer-2,#1e2128);font-size:12px}.dsh-tutor-source summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}.dsh-tutor-source div{margin-top:6px;max-height:200px;overflow:auto;white-space:pre-wrap;color:var(--dsw-alias-label-primary)}
+ .dsh-tutor-reasoning{margin:2px 0;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:8px;padding:4px 8px;background:var(--dsw-alias-bg-layer-2,#1e2128);font-size:12px;color:var(--dsw-alias-label-tertiary,#9aa2b1)}.dsh-tutor-reasoning summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}.dsh-tutor-reasoning div{margin-top:4px;max-height:220px;overflow:auto;white-space:pre-wrap}
+ .dsh-tutor-tool{margin:2px 0;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:8px;padding:4px 8px;background:var(--dsw-alias-bg-layer-2,#1e2128);font-size:12px}.dsh-tutor-tool summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}.dsh-tutor-tool pre{margin:6px 0 0;padding:6px;border-radius:6px;background:var(--dsw-alias-bg-layer-3,#2a2e38);white-space:pre-wrap;overflow:auto;max-height:160px}
+ .dsh-tutor-copy{position:absolute;top:4px;right:4px;appearance:none;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:6px;padding:1px 7px;background:var(--dsw-alias-bg-layer-2,#1e2128);color:var(--dsw-alias-label-tertiary,#9aa2b1);cursor:pointer;font-size:11px;line-height:18px}.dsh-tutor-copy:hover{color:var(--dsw-alias-label-primary)}
+ .dsh-tutor-msg.assistant{position:relative;padding-top:10px}
+ .dsh-tutor-error{margin:0 12px 8px;padding:7px 10px;border-radius:8px;background:color-mix(in srgb,var(--dsw-alias-label-error,#ef4444) 14%,transparent);color:var(--dsw-alias-label-error,#ef4444);font-size:12px;display:flex;align-items:center;gap:8px}.dsh-tutor-error span{flex:1}.dsh-tutor-error button{appearance:none;border:0;background:none;color:inherit;cursor:pointer;font:inherit;padding:0}
 .dsh-tutor-composer{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--dsw-alias-border-l2,#3a3f4b)}
 .dsh-tutor-composer textarea{flex:1;resize:none;height:56px;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:10px;padding:8px 10px;background:var(--dsw-alias-bg-layer-2,#1e2128);color:inherit;font:inherit;line-height:1.5}
 .dsh-tutor-actions{display:flex;flex-direction:column;gap:6px}
 .dsh-tutor-actions button{appearance:none;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:9px;padding:6px 12px;background:var(--dsw-alias-bg-layer-3,#2a2e38);color:inherit;cursor:pointer;font:inherit;white-space:nowrap}
 .dsh-tutor-actions button:disabled{opacity:.45;cursor:default}
 .dsh-tutor-actions button.primary{background:var(--dsw-alias-brand-primary,#3b82f6);border-color:var(--dsw-alias-brand-primary,#3b82f6);color:#fff}
-.dsh-tutor-resize{position:absolute;right:0;bottom:0;width:20px;height:20px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 50%,var(--dsw-alias-label-dimmed,#6b7280) 50%);opacity:.7;touch-action:none}
+.dsh-tutor-resize{position:absolute;right:0;bottom:0;width:32px;height:32px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 50%,var(--dsw-alias-label-dimmed,#6b7280) 50%) 100% 100%/18px 18px no-repeat;opacity:.7;touch-action:none}
 .dsh-tutor-resize:hover{opacity:1}
 `
   document.head.append(style)
@@ -99,6 +123,7 @@ function ensureStyles(): void {
 
 function SettingsCard(): JSX.Element {
   const [effort, setEffort] = useState<TutorEffort>(TUTOR_DEFAULT_EFFORT)
+  const [target, setTarget] = useState<TutorTranslateTarget>(TUTOR_DEFAULT_TRANSLATE_TARGET)
   const [revision, setRevision] = useState<number | undefined>(undefined)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -106,47 +131,68 @@ function SettingsCard(): JSX.Element {
   useEffect(() => {
     void api.settingsGet().then((result) => {
       if (!result.ok) return
-      const value = result.value.value as { defaultReasoningEffort?: unknown } | null | undefined
-      if (value !== null && value !== undefined) setEffort(normalizeTutorEffort(value.defaultReasoningEffort))
+      const value = result.value.value as { defaultReasoningEffort?: unknown; translateTarget?: unknown } | null | undefined
+      if (value !== null && value !== undefined) {
+        setEffort(normalizeTutorEffort(value.defaultReasoningEffort))
+        setTarget(normalizeTutorTranslateTarget(value.translateTarget))
+      }
       if (typeof result.value.revision === 'number') setRevision(result.value.revision)
     })
   }, [])
 
-  const update = async (next: TutorEffort): Promise<void> => {
+  const save = async (patch: Record<string, unknown>, rollback: () => void): Promise<void> => {
     if (saving) return
-    const previous = effort
-    setEffort(next)
     setSaving(true)
     setError(null)
-    const result = await api.settingsUpdate({ defaultReasoningEffort: next }, revision)
+    const result = await api.settingsUpdate(patch, revision)
     setSaving(false)
     if (result.ok) {
       if (typeof result.value.revision === 'number') setRevision(result.value.revision)
     } else {
-      setEffort(previous)
+      rollback()
       setError(result.error.message)
     }
+  }
+
+  const updateEffort = async (next: TutorEffort): Promise<void> => {
+    const previous = effort
+    setEffort(next)
+    await save({ defaultReasoningEffort: next }, () => { setEffort(previous) })
+  }
+
+  const updateTarget = async (next: TutorTranslateTarget): Promise<void> => {
+    const previous = target
+    setTarget(next)
+    await save({ translateTarget: next }, () => { setTarget(previous) })
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
         <span style={{ color: 'var(--dsw-alias-label-secondary)' }}>小窗默认思考强度</span>
-        <select value={effort} disabled={saving} onChange={event => { void update(event.currentTarget.value as TutorEffort) }}>
+        <select value={effort} disabled={saving} onChange={event => { void updateEffort(event.currentTarget.value as TutorEffort) }}>
           {TUTOR_EFFORTS.map(id => (
             <option key={id} value={id}>{EFFORT_LABELS[id]}</option>
           ))}
         </select>
       </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+        <span style={{ color: 'var(--dsw-alias-label-secondary)' }}>翻译默认目标语言</span>
+        <select value={target} disabled={saving} onChange={event => { void updateTarget(event.currentTarget.value as TutorTranslateTarget) }}>
+          {TUTOR_TRANSLATE_TARGETS.map(id => (
+            <option key={id} value={id}>{TARGET_LABELS[id]}</option>
+          ))}
+        </select>
+      </label>
       <p style={{ margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>
-        仅控制新建学习小窗的思考强度（off / high / max）；小窗内仍可临时切换，模型固定继承当前主会话，不可更换。
+        思考强度（off / high / max）只影响新建小窗；翻译窗口打开后可先预览原文并调整目标语言。模型固定继承当前主会话，不可更换。
       </p>
       {error !== null ? <p style={{ margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-error)' }}>{error}</p> : null}
     </div>
   )
 }
 
-/** Selection listener: show the floating menu right above the selected text. */
+/** Selection listener: show the floating menu above/below the selected text, with viewport clamping. */
 function SelectionMenu({ current, onPick }: { current: string | undefined; onPick: (mode: TutorMode, text: string) => void }) {
   const [local, setLocal] = useState<SelectionAnchor | null>(null)
 
@@ -163,17 +209,24 @@ function SelectionMenu({ current, onPick }: { current: string | undefined; onPic
       if (element !== null && element.closest('[data-dsh-selection-tutor]') !== null) { setLocal(null); return }
       const rect = range.getBoundingClientRect()
       if (rect.width === 0 && rect.height === 0) { setLocal(null); return }
-      setLocal({ text, x: rect.left + rect.width / 2, y: rect.top })
+      const halfWidth = SELECTION_MENU_WIDTH / 2
+      const x = clamp(rect.left + rect.width / 2, halfWidth + SELECTION_MENU_GAP, window.innerWidth - halfWidth - SELECTION_MENU_GAP)
+      const above = rect.top - SELECTION_MENU_GAP - SELECTION_MENU_HEIGHT >= 0
+      const y = above ? rect.top - SELECTION_MENU_GAP : rect.bottom + SELECTION_MENU_GAP
+      setLocal({ text, x, y, placement: above ? 'above' : 'below', charCount: text.length })
     }
     const onMouseUp = (): void => { window.setTimeout(compute, 0) }
     const onScroll = (): void => { setLocal(null) }
+    const onKeyDown = (event: KeyboardEvent): void => { if (event.key === 'Escape') setLocal(null) }
     document.addEventListener('mouseup', onMouseUp)
     document.addEventListener('selectionchange', compute)
     document.addEventListener('scroll', onScroll, true)
+    document.addEventListener('keydown', onKeyDown)
     return () => {
       document.removeEventListener('mouseup', onMouseUp)
       document.removeEventListener('selectionchange', compute)
       document.removeEventListener('scroll', onScroll, true)
+      document.removeEventListener('keydown', onKeyDown)
     }
   }, [])
 
@@ -186,7 +239,8 @@ function SelectionMenu({ current, onPick }: { current: string | undefined; onPic
 
   if (local === null || current === undefined) return null
   return (
-    <div className="dsh-tutor-menu" style={{ left: local.x, top: local.y - 8 }}>
+    <div className={`dsh-tutor-menu${local.placement === 'below' ? ' below' : ''}`} style={{ left: local.x, top: local.y }}>
+      <span className="dsh-tutor-count">{local.charCount} 字</span>
       <button type="button" onClick={() => { pick('explain') }}>解释</button>
       <button type="button" onClick={() => { pick('translate') }}>翻译</button>
     </div>
@@ -199,14 +253,20 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
   const [draft, setDraft] = useState('')
   const [running, setRunning] = useState(win.autoSend)
   const [effort, setEffort] = useState<TutorEffort>(win.reasoningEffort)
+  const [translateTarget, setTranslateTarget] = useState<TutorTranslateTarget>(win.translateTarget)
+  const [promptSent, setPromptSent] = useState(win.promptSent)
   const [error, setError] = useState<string | null>(null)
   const [closing, setClosing] = useState(false)
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; origin: WindowPosition } | null>(null)
   const resizeRef = useRef<{ pointerId: number; startX: number; startY: number; origin: WindowPosition } | null>(null)
   const sendingRef = useRef(false)
   const refreshingRef = useRef(false)
   const closingRef = useRef(false)
   const stickToBottomRef = useRef(true)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const copyTimerRef = useRef<number | undefined>(undefined)
+  const closeRef = useRef<() => Promise<void>>(async () => {})
   const latestPosition = useRef(position)
   latestPosition.current = position
 
@@ -230,9 +290,10 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
 
   useEffect(() => {
     void refresh()
-    const timer = window.setInterval(() => { void refresh() }, 700)
+    const delay = running ? POLL_RUNNING_MS : POLL_IDLE_MS
+    const timer = window.setInterval(() => { void refresh() }, delay)
     return () => { window.clearInterval(timer) }
-  }, [refresh])
+  }, [refresh, running])
 
   useEffect(() => {
     const onPageHide = (): void => {
@@ -241,6 +302,23 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
     window.addEventListener('pagehide', onPageHide)
     return () => { window.removeEventListener('pagehide', onPageHide) }
   }, [win.windowId])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { textareaRef.current?.focus() }, 0)
+    return () => { window.clearTimeout(timer) }
+  }, [win.windowId])
+
+  useEffect(() => {
+    if (error === null) return
+    const timer = window.setTimeout(() => { setError(null) }, ERROR_AUTO_DISMISS_MS)
+    return () => { window.clearTimeout(timer) }
+  }, [error])
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     const onResizeViewport = (): void => {
@@ -261,19 +339,26 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
 
   const send = async (): Promise<void> => {
     const text = draft.trim()
-    if (text === '' || running || sendingRef.current) return
+    const firstTranslate = win.mode === 'translate' && !promptSent
+    if (sendingRef.current || running) return
+    if (!firstTranslate && text === '') return
+    const previousDraft = draft
     sendingRef.current = true
     setDraft('')
     setRunning(true)
     stickToBottomRef.current = true
     setError(null)
     try {
-      const result = await api.followup({ windowId: win.windowId, text })
+      const result = firstTranslate
+        ? await api.translate({ windowId: win.windowId, translateTarget, text })
+        : await api.followup({ windowId: win.windowId, text })
       if (!result.ok) {
+        setDraft(previousDraft)
         setRunning(false)
         setError(result.error.message)
         return
       }
+      if (firstTranslate) setPromptSent(true)
       await refresh()
     } finally {
       sendingRef.current = false
@@ -298,6 +383,17 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
     }
   }
 
+  const changeTranslateTarget = async (next: TutorTranslateTarget): Promise<void> => {
+    if (next === translateTarget) return
+    const previous = translateTarget
+    setTranslateTarget(next)
+    const result = await api.translateTarget({ windowId: win.windowId, translateTarget: next })
+    if (!result.ok) {
+      setError(result.error.message)
+      setTranslateTarget(previous)
+    }
+  }
+
   const close = async (): Promise<void> => {
     if (closingRef.current) return
     if (running) {
@@ -309,6 +405,33 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
     await api.dispose({ windowId: win.windowId })
     onClose()
   }
+
+  const copyMessage = async (message: TutorMessage, index: number): Promise<void> => {
+    const text = message.blocks
+      .filter((block): block is Extract<TutorBlock, { type: 'text' }> => block.type === 'text')
+      .map(block => block.text)
+      .join('\n\n')
+      .trim()
+    if (text === '') return
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedIndex(index)
+      if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = window.setTimeout(() => { setCopiedIndex(null) }, 1500)
+    } catch {
+      setError('复制失败，请手动选择文本复制')
+    }
+  }
+
+  closeRef.current = close
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && !event.isComposing) void closeRef.current()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => { document.removeEventListener('keydown', onKeyDown) }
+  }, [])
 
   const onTitlePointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0) return
@@ -328,6 +451,11 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
   }
   const onTitlePointerUp = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (dragRef.current?.pointerId !== event.pointerId) return
+    dragRef.current = null
+    persistPosition(latestPosition.current)
+  }
+  const onTitlePointerLost = (): void => {
+    if (dragRef.current === null) return
     dragRef.current = null
     persistPosition(latestPosition.current)
   }
@@ -356,9 +484,16 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
     resizeRef.current = null
     persistPosition(latestPosition.current)
   }
+  const onResizePointerLost = (): void => {
+    if (resizeRef.current === null) return
+    resizeRef.current = null
+    persistPosition(latestPosition.current)
+  }
 
   const modeLabel = win.mode === 'explain' ? '解释' : '翻译'
+  const firstTranslate = win.mode === 'translate' && !promptSent
   const selectionPreview = win.selectionText.replace(/\s+/g, ' ').slice(0, 28)
+  const selectionCount = win.selectionText.trim().length
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const scrollRef = useCallback((node: HTMLDivElement | null) => {
     messagesRef.current = node
@@ -379,8 +514,8 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
   }, [messages])
 
   return (
-    <section className="dsh-tutor-window" data-dsh-selection-tutor="" style={{ left: position.left, top: position.top, width: position.width, height: position.height }}>
-      <div className="dsh-tutor-title" onPointerDown={onTitlePointerDown} onPointerMove={onTitlePointerMove} onPointerUp={onTitlePointerUp} onPointerCancel={onTitlePointerUp}>
+    <section role="dialog" aria-label={`${modeLabel}学习小窗`} className="dsh-tutor-window" data-dsh-selection-tutor="" style={{ left: position.left, top: position.top, width: position.width, height: position.height }}>
+      <div className="dsh-tutor-title" onPointerDown={onTitlePointerDown} onPointerMove={onTitlePointerMove} onPointerUp={onTitlePointerUp} onPointerCancel={onTitlePointerUp} onLostPointerCapture={onTitlePointerLost}>
         <div className="dsh-tutor-title-main">
           <span className="dsh-tutor-title-mode">{modeLabel}小窗</span>
           <span className="dsh-tutor-title-selection">{selectionPreview === '' ? '（空选择）' : `“${selectionPreview}”`}</span>
@@ -395,14 +530,36 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
             {TUTOR_EFFORTS.map(id => <option key={id} value={id}>{EFFORT_LABELS[id]}</option>)}
           </select>
         </label>
+        {win.mode === 'translate' ? (
+          <label>
+            目标语言
+            <select value={translateTarget} disabled={promptSent} onChange={event => { void changeTranslateTarget(event.currentTarget.value as TutorTranslateTarget) }}>
+              {TUTOR_TRANSLATE_TARGETS.map(id => <option key={id} value={id}>{TARGET_LABELS[id]}</option>)}
+            </select>
+          </label>
+        ) : null}
         {running ? <span>生成中…</span> : null}
       </div>
-      <div className="dsh-tutor-messages" ref={scrollRef} onScroll={handleMessagesScroll}>
-        {messages.length === 0 ? <div className="dsh-tutor-empty">{win.autoSend ? '正在准备临时会话…' : '小窗已就绪，请基于选中的内容提问。'}</div> : null}
+      <div className="dsh-tutor-messages" ref={scrollRef} onScroll={handleMessagesScroll} aria-live="polite" aria-label="小窗消息">
+        <details className="dsh-tutor-source">
+          <summary>选中原文（{selectionCount} 字）</summary>
+          <div>{win.selectionText}</div>
+        </details>
+        {messages.length === 0 ? <div className="dsh-tutor-empty">{firstTranslate ? '原文已就绪：选择目标语言后点击「开始翻译」，也可以先补充翻译要求。' : '小窗已就绪，请基于选中的内容提问。'}</div> : null}
         {messages.map((message, index) => (
           <div key={`${message.role}-${index}`} className={`dsh-tutor-msg ${message.role}`}>
+            {message.role === 'assistant' ? (
+              <button type="button" className="dsh-tutor-copy" onClick={() => { void copyMessage(message, index) }}>
+                {copiedIndex === index ? '已复制' : '复制'}
+              </button>
+            ) : null}
             {message.blocks.map((block: TutorBlock, blockIndex) => {
-              if (block.type === 'reasoning') return <div key={blockIndex} className="dsh-tutor-msg reasoning">{block.text}</div>
+              if (block.type === 'reasoning') return (
+                <details key={blockIndex} className="dsh-tutor-reasoning">
+                  <summary>思考过程（{block.text.length} 字）</summary>
+                  <div>{block.text}</div>
+                </details>
+              )
               if (block.type === 'error') return <div key={blockIndex} style={{ color: 'var(--dsw-alias-label-error,#ef4444)', whiteSpace: 'pre-wrap' }}>{block.text}</div>
               if (block.type === 'tool') {
                 return (
@@ -419,26 +576,32 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
           </div>
         ))}
       </div>
-      {error !== null ? <p className="dsh-tutor-error">{error}</p> : null}
+      {error !== null ? (
+        <p className="dsh-tutor-error">
+          <span>{error}</span>
+          <button type="button" onClick={() => { setError(null) }}>×</button>
+        </p>
+      ) : null}
       <div className="dsh-tutor-composer">
         <textarea
+          ref={textareaRef}
           value={draft}
-          placeholder={win.mode === 'explain' ? '就选中的内容提问…' : '继续追问…'}
+          placeholder={firstTranslate ? '可选：补充翻译要求（语气、术语等）…' : win.mode === 'explain' ? '就选中的内容提问…' : '继续追问…'}
           onChange={event => { setDraft(event.currentTarget.value) }}
           onKeyDown={event => {
             if (event.nativeEvent.isComposing) return
-            if (event.key === 'Enter' && !event.shiftKey) {
+            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey || !event.shiftKey)) {
               event.preventDefault()
               void send()
             }
           }}
         />
         <div className="dsh-tutor-actions">
-          <button type="button" className="primary" disabled={running || sendingRef.current || draft.trim() === ''} onClick={() => { void send() }}>发送</button>
+          <button type="button" className="primary" disabled={running || sendingRef.current || (!firstTranslate && draft.trim() === '')} onClick={() => { void send() }}>{firstTranslate ? '开始翻译' : '发送'}</button>
           <button type="button" disabled={!running} onClick={() => { void stop() }}>停止</button>
         </div>
       </div>
-      <div className="dsh-tutor-resize" onPointerDown={onResizePointerDown} onPointerMove={onResizePointerMove} onPointerUp={onResizePointerUp} onPointerCancel={onResizePointerUp} />
+      <div className="dsh-tutor-resize" onPointerDown={onResizePointerDown} onPointerMove={onResizePointerMove} onPointerUp={onResizePointerUp} onPointerCancel={onResizePointerUp} onLostPointerCapture={onResizePointerLost} />
     </section>
   )
 }
@@ -472,7 +635,7 @@ function TutorRoot({ ctx }: { ctx: Context }): JSX.Element {
     startingRef.current = true
     setStartError(null)
     try {
-      const result = await api.start({ parentSessionId, mode, selectionText: text, autoSend: mode === 'translate' })
+      const result = await api.start({ parentSessionId, mode, selectionText: text, autoSend: false })
       if (result.ok) {
         setWin({ ...result.value, mode, selectionText: text, parentSessionId })
       } else {
@@ -522,7 +685,7 @@ function registerModelConfigCard(): () => void {
   const card: ModelConfigCardShape = {
     id: 'dsh-selection-tutor',
     title: '划词学习小窗',
-    description: '选中文字后弹出“解释/翻译”浮动小窗的默认思考强度（off / high / max）。模型固定继承主会话，不提供模型切换。',
+    description: '选中文字后弹出“解释/翻译”浮动小窗的默认思考强度与翻译目标语言。翻译窗口先预览原文，模型固定继承主会话。',
     order: 100,
     render: () => <SettingsCard />,
   }

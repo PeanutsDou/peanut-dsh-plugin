@@ -1,7 +1,7 @@
 /** Browser API client for the host /plugins/dsh-selection-tutor/api routes. */
-import { TUTOR_PREFS_DEFAULTS, type TutorEffort } from '../settings-shared.ts'
+import { TUTOR_PREFS_DEFAULTS, type TutorEffort, type TutorTranslateTarget } from '../settings-shared.ts'
 
-export type { TutorEffort }
+export type { TutorEffort, TutorTranslateTarget }
 export type TutorMode = 'explain' | 'translate'
 
 export interface ApiError { code: string; message: string }
@@ -24,10 +24,13 @@ export interface StartResult {
   provider: string
   model: string
   reasoningEffort: TutorEffort
+  translateTarget: TutorTranslateTarget
+  promptSent: boolean
   autoSend: boolean
 }
 
 export const TUTOR_DEFAULT_EFFORT: TutorEffort = TUTOR_PREFS_DEFAULTS.defaultReasoningEffort
+export const TUTOR_DEFAULT_TRANSLATE_TARGET: TutorTranslateTarget = TUTOR_PREFS_DEFAULTS.translateTarget
 
 async function call<T>(method: string, payload: Record<string, unknown>): Promise<ApiResult<T>> {
   try {
@@ -59,12 +62,16 @@ export const api = {
     call<StartResult>('tutor.start', args),
   followup: (args: { windowId: string; text: string }) =>
     call<{ accepted: true }>('tutor.followup', args),
+  translate: (args: { windowId: string; translateTarget: TutorTranslateTarget; text?: string }) =>
+    call<{ accepted: true; promptSent: true }>('tutor.translate', args),
   history: (args: { windowId: string }) =>
     call<{ windowId: string; running: boolean; messages: TutorMessage[] }>('tutor.history', args),
   stop: (args: { windowId: string }) =>
     call<{ accepted: true }>('tutor.stop', args),
   effort: (args: { windowId: string; reasoningEffort: TutorEffort }) =>
     call<{ accepted: true; reasoningEffort: TutorEffort }>('tutor.effort', args),
+  translateTarget: (args: { windowId: string; translateTarget: TutorTranslateTarget }) =>
+    call<{ accepted: true; translateTarget: TutorTranslateTarget }>('tutor.translateTarget', args),
   dispose: (args: { windowId: string }) =>
     call<{ accepted: true }>('tutor.dispose', args),
   settingsGet: () => call<{ value?: unknown; revision?: number }>('settings.get', {}),

@@ -1,4 +1,4 @@
-import test from 'node:test'
+﻿import test from 'node:test'
 import assert from 'node:assert/strict'
 import { apply } from '../lib/index.js'
 
@@ -72,10 +72,10 @@ function makeContext(options = {}) {
       if (deps.includes('settings')) {
         const settings = {
           register() {
-            return { get: () => ({ defaultReasoningEffort: options.defaultEffort ?? 'off' }), watch: () => () => {} }
+            return { get: () => ({ defaultReasoningEffort: options.defaultEffort ?? 'off', translateTarget: options.defaultTarget ?? 'auto' }), watch: () => () => {} }
           },
           describe() {
-            return [{ ns: 'dsh-selection-tutor', value: { defaultReasoningEffort: options.defaultEffort ?? 'off' }, revision: 1 }]
+            return [{ ns: 'dsh-selection-tutor', value: { defaultReasoningEffort: options.defaultEffort ?? 'off', translateTarget: options.defaultTarget ?? 'auto' }, revision: 1 }]
           },
           update: async () => {},
         }
@@ -100,7 +100,7 @@ function makeContext(options = {}) {
               header: { cwd: agentOptions.meta?.cwd, parentSession: agentOptions.meta?.parentSession },
               events: [
                 { type: 'turn/start', time: 1, data: {} },
-                { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '解释 prompt' }] } },
+                { type: 'user/message', data: { source: { kind: 'user', tutorDisplay: '再解释一下' }, content: [{ type: 'text', text: '解释 prompt' }] } },
                 { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '这是解释' }] } } },
               ],
             },
@@ -124,7 +124,7 @@ function makeContext(options = {}) {
         session: { parentSession: 'parent-1' },
         events: options.readEvents ?? [
           { type: 'turn/start', time: 1, data: { turn: 1 } },
-          { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '解释 prompt' }] } },
+            { type: 'user/message', data: { source: { kind: 'user', tutorDisplay: '再解释一下' }, content: [{ type: 'text', text: '解释 prompt' }] } },
           { type: 'assistant/chunk', data: { turn: 1, step: 0, chunk: { type: 'text-delta', text: '这是' } } },
           { type: 'assistant/chunk', data: { turn: 1, step: 0, chunk: { type: 'text-delta', text: '解释' } } },
           { type: 'assistant/message', data: { turn: 1, step: 0, message: { content: [{ type: 'text', text: '这是解释' }] } } },
@@ -162,6 +162,8 @@ test('tutor host creates a tool-less archived child, forces effort live, and dis
   assert.equal(started.status, 200)
   assert.equal(started.body.ok, true)
   assert.equal(started.body.value.reasoningEffort, 'off')
+  assert.equal(started.body.value.translateTarget, 'auto')
+  assert.equal(started.body.value.promptSent, false)
   const childId = started.body.value.windowId
   assert.match(childId, /^tutor-/)
 
@@ -203,6 +205,9 @@ test('tutor host creates a tool-less archived child, forces effort live, and dis
   const history = await callRoute(route, { windowId: childId }, 'tutor.history')
   assert.equal(history.body.ok, true)
   assert.equal(history.body.value.running, false)
+  const user = history.body.value.messages.find(message => message.role === 'user')
+  assert.ok(user, 'synthetic system prompt must still produce one user bubble')
+  assert.equal(user.blocks[0].text, '再解释一下', 'only the user question is displayed, not the system prompt')
   const assistant = history.body.value.messages.find(message => message.role === 'assistant')
   const toolBlocks = assistant.blocks.filter(block => block.type === 'tool')
   assert.equal(toolBlocks.filter(block => block.name === 'read').length, 1, 'tool call must not duplicate')
@@ -228,9 +233,20 @@ test('translate mode auto-sends once and one tutor window per parent conversatio
   apply(ctx)
   const route = routes.get('/plugins/dsh-selection-tutor/api')
 
-  const first = await callRoute(route, { parentSessionId: 'parent-1', mode: 'translate', selectionText: 'hello' })
+  const first = await callRoute(route, { parentSessionId: 'parent-1', mode: 'translate', selectionText: 'hello', autoSend: false })
   assert.equal(first.body.ok, true)
+  assert.equal(first.body.value.promptSent, false)
+  assert.equal(followedUp.length, 0, 'translation windows preview before sending')
+
+  const translated = await callRoute(route, { windowId: first.body.value.windowId, translateTarget: 'ja', text: '口语一点' }, 'tutor.translate')
+  assert.equal(translated.body.ok, true)
   assert.equal(followedUp.length, 1)
+  assert.match(followedUp[0].content[0].text, /日本語/)
+  assert.match(followedUp[0].content[0].text, /口语一点/)
+
+  const twice = await callRoute(route, { windowId: first.body.value.windowId, translateTarget: 'en' }, 'tutor.translate')
+  assert.equal(twice.body.ok, false)
+  assert.equal(twice.body.error.code, 'translation-already-started')
   const second = await callRoute(route, { parentSessionId: 'parent-1', mode: 'explain', selectionText: 'world' })
   assert.equal(second.body.ok, false)
   assert.equal(second.body.error.code, 'window-exists')
@@ -274,4 +290,33 @@ test('non-loopback requests use the client-connection trustedHosts row', async (
     { host: '192.168.1.10:3080', origin: 'http://evil.test' },
   )
   assert.equal(denied.status, 403)
+})
+
+test('stop keeps running false until the cancelled turn closes in the log', async () => {
+  const openEvents = [
+    { type: 'turn/start', time: 1, data: { turn: 1 } },
+    { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '解释 prompt' }] } },
+    { type: 'assistant/chunk', data: { turn: 1, step: 0, chunk: { type: 'text-delta', text: '正在' } } },
+  ]
+  const { ctx, routes } = makeContext({ readEvents: openEvents })
+  apply(ctx)
+  const route = routes.get('/plugins/dsh-selection-tutor/api')
+  const started = await callRoute(route, { parentSessionId: 'parent-1', mode: 'explain', selectionText: 'x', autoSend: false })
+  assert.equal(started.body.ok, true)
+  const before = await callRoute(route, { windowId: started.body.value.windowId }, 'tutor.history')
+  assert.equal(before.body.value.running, true)
+  const stopped = await callRoute(route, { windowId: started.body.value.windowId }, 'tutor.stop')
+  assert.equal(stopped.body.ok, true)
+  const after = await callRoute(route, { windowId: started.body.value.windowId }, 'tutor.history')
+  assert.equal(after.body.value.running, false, 'stop must keep the UI stopped while the turn/end event is still in flight')
+})
+
+test('invalid translate targets are rejected at the API boundary', async () => {
+  const { ctx, routes } = makeContext()
+  apply(ctx)
+  const route = routes.get('/plugins/dsh-selection-tutor/api')
+  const started = await callRoute(route, { parentSessionId: 'parent-1', mode: 'translate', selectionText: 'x', autoSend: false })
+  const bad = await callRoute(route, { windowId: started.body.value.windowId, translateTarget: 'klingon' }, 'tutor.translate')
+  assert.equal(bad.body.ok, false)
+  assert.equal(bad.body.error.code, 'bad-request')
 })
