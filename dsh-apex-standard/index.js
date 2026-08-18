@@ -34,11 +34,14 @@ const PRESET_FILES = [
   'anchor-guardian.mjs',
   'apex-bootstrap.mjs',
   'compaction-epoch.mjs',
+  'cordis-guard.mjs',
   'custom-bash.mjs',
   'dev-tool-search.mjs',
   'guardian-boundary.mjs',
   'instruction-hint.mjs',
   'skill-search.mjs',
+  'skills/cordis-plugin-development/SKILL.md',
+  'skills/editing-cordis-compositions/SKILL.md',
 ]
 
 export async function apply(ctx) {
@@ -80,6 +83,8 @@ export async function apply(ctx) {
         kept += 1
         continue
       }
+      // Nested entries (skills/…) need their parent directory materialized.
+      await mkdir(dirname(target), { recursive: true })
       await writeFile(target, content)
       installed += 1
     }

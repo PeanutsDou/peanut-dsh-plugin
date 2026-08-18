@@ -39,6 +39,13 @@
  *     bootstrap pair and tools the model explicitly unlocked via
  *     dev_tool_search are never swapped; a missing replacement keeps the
  *     original tool.
+ *   - STRIPPED SECTIONS (config `bootstrapStrippedSections`, default empty):
+ *     prompt sections hidden from every PRE-promotion surface — the fresh
+ *     anchor phase and the post-compaction controlled phase alike. Rows that
+ *     register large guidance sections (e.g. `tool:cordis`, ~4.8KB) would
+ *     otherwise enter the first request and perturb the anchor the way the
+ *     AGENTS.md digest did (0/9); the strip keeps that surface identical to
+ *     a preset without those rows. Promoted requests see the sections again.
  *   - FLASH path (model id matches /flash/i): Flash is persona-dominated and
  *     catalog-immune (full 21-tool catalog still anchored minimal-like in
  *     the A2/B-matrix; ability is flat at ~92 across harnesses). The persona
@@ -106,6 +113,7 @@ const ALLOWED_KEYS = new Set([
   'proDisciplineHint',
   'proDisciplineHintText',
   'replaceTools',
+  'bootstrapStrippedSections',
 ])
 
 /**
@@ -316,6 +324,12 @@ export function apply(ctx, config) {
   const proDisciplineHint = optionalBoolean(source.proDisciplineHint, 'proDisciplineHint', false)
   const proDisciplineHintText = optionalNonEmptyString(source.proDisciplineHintText, 'proDisciplineHintText', DEFAULT_PRO_DISCIPLINE_HINT)
   const replaceTools = parseReplaceTools(source.replaceTools)
+  // Prompt sections hidden from every pre-promotion surface (fresh anchor
+  // phase AND post-compaction controlled phase). Registered by rows whose
+  // guidance only matters once the anchor is released — e.g. the
+  // `tool:cordis` self-modification section, whose ~4.8KB would perturb the
+  // Minimal-exact first request the way the AGENTS.md digest did (0/9).
+  const bootstrapStrippedSections = new Set(stringListOrEmpty(source.bootstrapStrippedSections, 'bootstrapStrippedSections'))
 
   const promotion = createEpochPromotion(promoteEvents, { includeSubagents, retryBoundary: isGuardianRetryBoundary })
   ctx.on('session/event', (session, event) => promotion.observe(session, event))
@@ -425,13 +439,18 @@ export function apply(ctx, config) {
       // Flash: god-mode persona on EVERY request (persona-led model — the
       // catalog is not its trigger). applyPersona touches ONLY the persona
       // section; plan-mode and every other section survive (router §G fix).
-      const sections = (path === 'flash' && flashGuidance)
+      const sections0 = (path === 'flash' && flashGuidance)
         ? applyPersona(assembled.sections, flashPersona)
         : assembled.sections
+      const status = promotion.status(agent)
+      // Strip configured sections from every pre-promotion surface so the
+      // anchor request stays identical to a preset without those rows.
+      const sections = (status.promoted || bootstrapStrippedSections.size === 0)
+        ? sections0
+        : sections0.filter((section) => !bootstrapStrippedSections.has(section.name))
       const withSections = sections === assembled.sections ? assembled : { ...assembled, sections }
 
       const fullByName = new Map(assembled.tools.map((tool) => [tool.name, tool]))
-      const status = promotion.status(agent)
       if (status.promoted) {
         // FLASH promoted: full Standard catalog (default) — Flash is
         // catalog-immune (A2/B-matrix); `resident` keeps the narrow set.

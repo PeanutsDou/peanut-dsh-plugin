@@ -311,6 +311,73 @@ const bashAgent2 = { session: { id: 'bash-s2', events: bashEvents2, header: {} }
 check('bash: lockAfterPromotion false disables the lock',
   await outcome(bashTool2.execute({ command: 'echo hi' }, { agent: bashAgent2 })), 'ran')
 
+// ── bootstrapStrippedSections: pre-promotion prompt-section strip ────────
+const stripListeners = harness({ bootstrapStrippedSections: ['tool:cordis'] })
+const stripAssemble = stripListeners.get('system-prompt/assemble')[0].fn
+const sectionsWithCordis = () => [
+  { name: 'persona', text: 'persona' },
+  { name: 'plan-mode', text: 'plan' },
+  { name: 'tool:cordis', text: 'CORDIS_GUIDANCE' },
+]
+const runStrip = (agent) => stripAssemble(null, { agent }, async () => ({
+  tools: ALL_TOOLS.map((name) => ({ name })),
+  sections: sectionsWithCordis(),
+}))
+const sectionNames = (result) => result.sections.map((s) => s.name)
+
+const stripEvents = []
+const stripPro = makeAgent('deepseek-v4-pro', stripEvents)
+check('strip: fresh anchor phase removes tool:cordis section, keeps others',
+  sectionNames(await runStrip(stripPro)), ['persona', 'plan-mode'])
+stripEvents.push(toolCall(1, 'bash'))
+check('strip: promoted requests see the section again',
+  sectionNames(await runStrip(stripPro)), ['persona', 'plan-mode', 'tool:cordis'])
+stripEvents.push(compactionEnd(2))
+check('strip: post-compaction controlled phase strips again',
+  sectionNames(await runStrip(stripPro)), ['persona', 'plan-mode'])
+
+const stripFlashEvents = []
+const stripFlash = makeAgent('deepseek-v4-flash', stripFlashEvents)
+check('strip: flash fresh anchor phase also strips the section',
+  sectionNames(await runStrip(stripFlash)), ['plan-mode', 'apex-persona'])
+
+const noStripListeners = harness({})
+const noStripAssemble = noStripListeners.get('system-prompt/assemble')[0].fn
+const noStripEvents = []
+const noStripPro = makeAgent('deepseek-v4-pro', noStripEvents)
+check('strip: absent config leaves sections untouched',
+  sectionNames(await noStripAssemble(null, { agent: noStripPro }, async () => ({
+    tools: ALL_TOOLS.map((name) => ({ name })),
+    sections: sectionsWithCordis(),
+  }))), ['persona', 'plan-mode', 'tool:cordis'])
+
+// ── cordis-guard: idempotent Inspect provider registration ──────────────
+const guardPlugin = await import('../preset/cordis-guard.mjs')
+const guardProviders = new Map()
+const guardRegistry = {
+  register(registration) {
+    const id = registration?.manifest?.id
+    if (id === undefined) throw new Error('provider without id')
+    if (guardProviders.has(id)) throw new Error(`Host Cordis inspect provider "${id}" is already registered`)
+    guardProviders.set(id, registration)
+    return () => { guardProviders.delete(id) }
+  },
+  list() {
+    return [...guardProviders.values()].map((r) => ({ platform: 'host', id: r.manifest.id }))
+  },
+}
+const guardEffects = []
+guardPlugin.apply({
+  cordisInspect: guardRegistry,
+  effect: (cb) => { guardEffects.push(cb); return () => {} },
+})
+check('cordis-guard: first registration goes through', guardRegistry.register({ manifest: { id: 'Service' } }) !== undefined && guardProviders.has('Service'), true)
+guardRegistry.register({ manifest: { id: 'Service' } })
+check('cordis-guard: duplicate registration is a no-op instead of throwing', guardProviders.size, 1)
+guardRegistry.register({ manifest: { id: 'Event' } })
+check('cordis-guard: a new provider still registers through the patch', guardProviders.size, 2)
+check('cordis-guard: patch is reversible via the effect disposer', guardEffects.length, 1)
+
 // ── Guardian classifier ──────────────────────────────────────────────────
 check('classifier labels we-without-let-me as anchored',
   classifyReasoning('We need inspect the repository before editing.'), { label: 'anchored', we: 1, letMe: 0 })

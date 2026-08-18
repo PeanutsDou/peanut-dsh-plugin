@@ -57,6 +57,7 @@ const UNLOCKABLE_INDEX = [
   'interrupt_agent / send_message / list_agents — multi-agent control',
   'todo_write — task tracking',
   'ask_user_question — ask the user',
+  'cordis_define / cordis_run / cordis_inspect_* — temporarily extend or modify the current DSH runtime (dynamic plugins)',
 ]
 
 /** Register the model-facing `dev_tool_search` tool. */

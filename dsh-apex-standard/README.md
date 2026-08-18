@@ -128,6 +128,16 @@ agent-presets:
 | Windows 晋升后仍需 Git Bash | `dev_tool_search` 显式解锁 `bash`，或设 `custom-bash` 行 `lockAfterPromotion: false` |
 | 纯 greenfield 创意构建（Pro） | 建议与官方 PTC/code preset 对照使用（见 §9） |
 
+### 5.4 创造模式（cordis）自修改能力
+
+梁神模式内置了官方 `cordis` preset（创造模式）的运行时自修改工具集（`dsh-tool-cordis` 行）：
+
+- 7 个 `cordis_*` 工具（define / run / stop / undefine / inspect）注册在完整目录里，**只在模型通过 `dev_tool_search` 解锁后出现**，首请求与晋升常驻集均不含它们；
+- 两个组合编写技能（`cordis-plugin-development`、`editing-cordis-compositions`）随 preset 分发，经 `skill_search` / `skill_load` 按需加载；
+- **锚定保护**：`tool:cordis` 注册的 ~4.8KB 指引段与 @pluginId 上下文注入在晋升前（含压缩受控期）被剥离（`bootstrapStrippedSections` + `suppressedContextSources`），晋升后恢复 —— "we need" 锚定面与未安装该能力时字节一致；
+- **跨预设共存**：`cordisInspect` 是进程全局注册表，`tool-cordis` 对重复 provider id 会抛错 —— 本预设与官方 `cordis` 预设同进程运行时，`cordis-guard` 行（位于 tool-cordis 之前）把注册改为幂等，两个预设任意挂载顺序都安全；
+- **信任边界与 cordis preset 相同**：解锁这些工具的会话可以修改自身所在运行时。使用 `dev_tool_search` 的批量解锁规则（一次解锁全部需要的工具，避免多次前缀缓存重建）。
+
 ## 6. 配置说明
 
 配置位于 `preset/agent.cordis.yml` 首行 `apex-bootstrap`：
@@ -147,6 +157,7 @@ agent-presets:
 | `proDisciplineHint` | `false` | Pro 晋升后每 epoch 注入一次长任务纪律提示 |
 | `proDisciplineHintText` | 内置纪律提示文本 | 自定义提示内容 |
 | `replaceTools` | `{}` | 锚定阶段之后的工具替换映射（如 Windows `{ bash: 'pwsh' }`）；严格 bootstrap 对与显式解锁不受影响，替换目标缺失时保留原工具 |
+| `bootstrapStrippedSections` | `[tool:cordis]` | 晋升前（含压缩受控期）从 system prompt 剥离的提示段名；保证锚定面与无 cordis 工具集时字节一致 |
 
 `anchor-guardian` 行：
 
@@ -231,7 +242,7 @@ npm test
 # 或：node test/smoke.mjs && node test/guardian.smoke.mjs
 ```
 
-`test/smoke.mjs` 覆盖 41 项断言：双路径锚定、guardian 重试边界的 fresh 目录、晋升、解锁、压缩回退、`replaceTools` 替换（严格期不替换 / 晋升后替换 / 显式解锁优先 / Flash 全目录 / 目标缺失降级）、custom-bash 锚定后锁定（晋升锁定 / 解锁恢复 / 压缩受控锁定 / guardian 重试放行 / 开关关闭）、注入剥离（含 time-context）、提示每 epoch 一次、无事件馈送的 rc.6 降级路径、降级目录。`test/guardian.smoke.mjs` 覆盖 7 项断言：浅首块 early-abort、surface 替换节点、followup 唤醒、重试后达标释放、分类器。全部通过输出 `ALL PASS`。
+`test/smoke.mjs` 覆盖 50 项断言：双路径锚定、guardian 重试边界的 fresh 目录、晋升、解锁、压缩回退、`replaceTools` 替换（严格期不替换 / 晋升后替换 / 显式解锁优先 / Flash 全目录 / 目标缺失降级）、custom-bash 锚定后锁定（晋升锁定 / 解锁恢复 / 压缩受控锁定 / guardian 重试放行 / 开关关闭）、`bootstrapStrippedSections` 提示段剥离（fresh 剥离 / 晋升恢复 / 受控再剥离 / Flash 同步剥离 / 缺省不动）、cordis-guard 幂等注册（首注册 / 重复跳过 / 新 provider 放行 / disposer 可逆）、注入剥离（含 time-context）、提示每 epoch 一次、无事件馈送的 rc.6 降级路径、降级目录。`test/guardian.smoke.mjs` 覆盖 7 项断言：浅首块 early-abort、surface 替换节点、followup 唤醒、重试后达标释放、分类器。全部通过输出 `ALL PASS`。
 
 ## 9. 已知限制
 
@@ -239,6 +250,7 @@ npm test
 - **C4 残余风险**：Pro 在纯 greenfield 创意构建上存在 spec 侧反路由证据（Mario 6/10 vs PTC 10/10），预设层无代价方案，建议此类任务与官方 PTC/code preset 对照使用；
 - **C5 相关任务链**：Flash 静态引导在紧密相关的任务链上实测为负收益，已提供 `flashGuidance: false` 开关；
 - **宿主能力边界**：compaction 摘要质量、token 计量等属 dsh 宿主能力，agent-plane 无法控制；宿主的工具执行不校验 wire 目录，`bash` 锁定依赖 `custom-bash` 自身的晋升感知（`lockAfterPromotion`）；
+- **cordis 解锁与轨迹阈值**：一次解锁全部 7 个 `cordis_*` 工具会让常驻集超过实测的 +8 工具阈值（"let me" 人格唤醒）——插件工程任务中这是有意的选择，但普通任务应避免顺手解锁；
 - **上游遗留**：`custom-bash` 的 `timeoutMs` 配置被声明但未传入 spawn（继承自上游，行为无影响）。
 
 ## 10. 贡献指南

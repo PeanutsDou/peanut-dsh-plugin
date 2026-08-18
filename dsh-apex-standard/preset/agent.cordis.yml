@@ -56,7 +56,9 @@
   config:
     bootstrapTools: [bash, str_replace_editor]
     promoteOn: either
-    suppressedContextSources: [agent-instructions, skill-catalog, time-context]
+    # `tool-cordis` joins the pre-promotion suppression list: its @pluginId
+    # reference context injection must not enter the anchor request either.
+    suppressedContextSources: [agent-instructions, skill-catalog, time-context, tool-cordis]
     # Post-compaction core work set. Deliberately SMALL (v1.1.0): the local
     # trigger experiments measured `let me` resurfacing at +4 extra tools and
     # fully waking at +8 — and compaction only ever happens in LONG sessions,
@@ -73,6 +75,13 @@
     # were missing the swap degrades to keeping bash. Tools the model
     # explicitly unlocks via dev_tool_search are never swapped.
     replaceTools: !!js "process.platform === 'win32' ? { bash: 'pwsh' } : {}"
+    # Prompt sections stripped from every pre-promotion surface (fresh anchor
+    # phase AND post-compaction controlled phase). `tool:cordis` registers a
+    # ~4.8KB self-modification guidance section that would perturb the
+    # Minimal-exact first request the way the AGENTS.md digest did (0/9);
+    # stripping it keeps the we-need anchor surface byte-identical to before
+    # the cordis toolset existed. Promoted requests see it again.
+    bootstrapStrippedSections: [tool:cordis]
     # ── model-aware branching (all optional; defaults shown) ──
     # forcePath: auto            # auto | pro | flash — pin the path manually
     # flashGuidance: true        # false on tightly RELATED task chains (P21)
@@ -267,6 +276,15 @@
 # matching summaries) and skill_load (inject one skill's full instructions).
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    # The two composition-authoring skills travel with this preset (copied
+    # from the official `cordis` preset's skills/): they document THIS
+    # deployment's planes and tooling. `baseUrl` is the preset's own
+    # directory, so the root resolves wherever the preset is installed.
+    # Registered into THIS preset's skill layer — surfaced only through
+    # skill_search/skill_load, never auto-injected.
+    customSkillDirs:
+      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"
 
 - id: skill-search
   name: ./skill-search.mjs
@@ -428,3 +446,28 @@
   config:
     fetch: false
     searchTimeoutMs: 60000
+
+# ── self-modification (borrowed from the official `cordis` preset) ──────────
+
+# The runtime self-modification toolset: dynamic Cordis plugins (define / run
+# / stop / undefine / inspect) plus the Inspect providers. Registers 7
+# cordis_* tools into the FULL catalog; the bootstrap narrows them away from
+# the first request and they surface only after a dev_tool_search unlock, so
+# the we-need anchor surface is unchanged. Consumes host-plane services only
+# (dynamicCordisRunner / cordisInspect / systemPrompt) — no realm needed.
+# Its `tool:cordis` prompt section and @pluginId context injection are
+# stripped pre-promotion by apex-bootstrap (bootstrapStrippedSections and
+# suppressedContextSources above) and restored after promotion.
+# TRUST: identical trust boundary to the cordis preset — a session with
+# these tools can modify the runtime it runs in.
+
+# Must sit BEFORE tool-cordis: makes Host Inspect provider registration
+# idempotent for this preset's fiber lifetime (see cordis-guard.mjs). The
+# `cordisInspect` registry is PROCESS-GLOBAL and tool-cordis throws on a
+# duplicate provider id, so this preset and the official `cordis` preset
+# would otherwise break each other's mount when both run in one DSH process.
+- id: cordis-guard
+  name: ./cordis-guard.mjs
+
+- id: tool-cordis
+  name: '@deepseek-ai/dsh-tool-cordis'
