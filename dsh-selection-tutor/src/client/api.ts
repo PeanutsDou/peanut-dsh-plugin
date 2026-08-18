@@ -27,6 +27,8 @@ export interface StartResult {
   translateTarget: TutorTranslateTarget
   promptSent: boolean
   autoSend: boolean
+  seedLength: number
+  inheritedTurns: number
 }
 
 export const TUTOR_DEFAULT_EFFORT: TutorEffort = TUTOR_PREFS_DEFAULTS.defaultReasoningEffort

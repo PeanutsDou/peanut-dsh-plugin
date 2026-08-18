@@ -103,6 +103,8 @@ function ensureStyles(): void {
  .dsh-tutor-title-actions button.active{color:var(--dsw-alias-brand-primary,#7aa2ff);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary,#3b82f6) 40%,transparent)}
  .dsh-tutor-title-actions button:disabled{opacity:.45;cursor:default}
 .dsh-tutor-meta{display:flex;align-items:center;gap:10px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l2,#3a3f4b);font-size:12px;color:var(--dsw-alias-label-tertiary,#9aa2b1);background:var(--dsw-alias-bg-layer-2,#1e2128)}
+ .dsh-tutor-meta{flex-wrap:wrap;row-gap:4px}
+ .dsh-tutor-context-badge{flex:none;padding:2px 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary,#3b82f6) 42%,transparent);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-brand-primary,#3b82f6) 12%,transparent);color:var(--dsw-alias-brand-primary,#7aa2ff);white-space:nowrap}
 .dsh-tutor-meta select{appearance:none;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:7px;padding:2px 8px;background:var(--dsw-alias-bg-layer-3,#2a2e38);color:inherit;font:inherit}
 .dsh-tutor-messages{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;min-height:0}
 .dsh-tutor-msg{max-width:92%;border-radius:12px;padding:8px 11px;white-space:normal;overflow-wrap:anywhere}
@@ -504,6 +506,10 @@ function TutorWindow({ win, onClose, pinned, onTogglePin }: { win: StartResult &
   const firstTranslate = win.mode === 'translate' && !promptSent
   const selectionPreview = win.selectionText.replace(/\s+/g, ' ').slice(0, 28)
   const selectionCount = win.selectionText.trim().length
+  const contextLabel = win.inheritedTurns > 0
+    ? `已继承主会话上下文 ${win.inheritedTurns} 轮`
+    : '未继承上下文（主会话无已完成轮次）'
+  const contextTitle = '小窗创建时固定快照，不会随主会话后续内容变化'
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const scrollRef = useCallback((node: HTMLDivElement | null) => {
     messagesRef.current = node
@@ -537,6 +543,7 @@ function TutorWindow({ win, onClose, pinned, onTogglePin }: { win: StartResult &
       </div>
       <div className="dsh-tutor-meta">
         <span>模型：{win.model}（继承主会话，无工具只读）</span>
+        <span className="dsh-tutor-context-badge" title={contextTitle}>{contextLabel}</span>
         <label>
           思考强度
           <select value={effort} onChange={event => { void changeEffort(event.currentTarget.value as TutorEffort) }}>
@@ -709,7 +716,7 @@ function registerModelConfigCard(): () => void {
   const card: ModelConfigCardShape = {
     id: 'dsh-selection-tutor',
     title: '划词学习小窗',
-    description: '选中文字后弹出“解释/翻译”浮动小窗的默认思考强度与翻译目标语言。翻译窗口先预览原文，模型固定继承主会话。',
+    description: '选中文字后弹出“解释/翻译”浮动小窗的默认思考强度与翻译目标语言。小窗固定继承主会话已完成轮次快照，模型不可更换。',
     order: 100,
     render: () => <SettingsCard />,
   }

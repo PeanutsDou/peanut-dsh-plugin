@@ -61,6 +61,10 @@ interface TutorRecord {
   activityAt: number | undefined
   lastSeenAt: number
   createdAt: number
+  /** Number of leading events copied from the parent session (fixed at creation). */
+  seedLength: number
+  /** Completed parent turns carried by the fixed seed, for the UI context marker. */
+  inheritedTurns: number
   /** Incremental transcript fold: only events after lastEventCount are folded on each history poll. */
   transcript: TranscriptFoldState
   handle: TutorAgentHandle
@@ -94,6 +98,41 @@ function clampSelection(text: string): string {
   const trimmed = text.trim()
   return trimmed.length <= MAX_SELECTION_CHARS ? trimmed : `${trimmed.slice(0, MAX_SELECTION_CHARS)}\n…[选中内容过长，已截断]`
 }
+
+/** One-time, immutable context snapshot: the parent log through its last completed turn. */
+function forkSeed(events: readonly TutorSessionEvent[]): TutorSessionEvent[] {
+  if (events.length === 0) return []
+  let lastTurnStart = -1
+  let lastTurnEnd = -1
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index]
+    if (event === undefined) continue
+    if (event.type === 'turn/start') lastTurnStart = index
+    else if (event.type === 'turn/end') lastTurnEnd = index
+  }
+  // No open turn: snapshot through the latest event (mirrors SessionStore.fork's default boundary).
+  if (lastTurnStart <= lastTurnEnd) return events.slice()
+  // The parent is mid-turn: fall back to the previous completed turn. A first turn
+  // that is still running has no completed prefix, so the child starts empty.
+  return lastTurnEnd < 0 ? [] : events.slice(0, lastTurnEnd + 1)
+}
+
+function completedTurnCount(events: readonly TutorSessionEvent[]): number {
+  let count = 0
+  for (const event of events) if (event.type === 'turn/end') count += 1
+  return count
+}
+
+/** Keep the floating-window transcript to live child events only; seeded parent history stays model-visible but UI-hidden. */
+function eventsAfterSeed(events: readonly TutorSessionEvent[], seedLength: number): TutorSessionEvent[] {
+  let start = Math.min(Math.max(seedLength, 0), events.length)
+  for (let index = start; index < events.length; index++) {
+    const event = events[index]
+    if (event !== undefined && event.type === 'session/end-seed') start = index + 1
+  }
+  return events.slice(start)
+}
+
 
 function translateDirective(target: TutorTranslateTarget): string {
   switch (target) {
@@ -331,7 +370,7 @@ function buildApi(ctx: Context, tutors: Map<string, TutorRecord>, getSettings: (
     }
   }
 
-  const start = async (payload: unknown): Promise<{ windowId: string; childSessionId: string; provider: string; model: string; reasoningEffort: TutorEffort; translateTarget: TutorTranslateTarget; promptSent: boolean; autoSend: boolean }> => {
+  const start = async (payload: unknown): Promise<{ windowId: string; childSessionId: string; provider: string; model: string; reasoningEffort: TutorEffort; translateTarget: TutorTranslateTarget; promptSent: boolean; autoSend: boolean; seedLength: number; inheritedTurns: number }> => {
     const parentSessionId = requireString(payload, 'parentSessionId')
     const mode = requireString(payload, 'mode')
     const selectionText = requireString(payload, 'selectionText')
@@ -355,6 +394,16 @@ function buildApi(ctx: Context, tutors: Map<string, TutorRecord>, getSettings: (
     const maxTokens = parentConfig?.maxTokens ?? parent.options.maxTokens
     const cwd = parent.session.header.cwd
 
+
+    // One-time stable snapshot. Prefer the live session's immutable event snapshot:
+    // sessionQuery.readSession() clones + replay-validates the whole parent log,
+    // which is the expensive part of opening a tutor window on a long conversation.
+    // If the parent is mid-turn we only take its last completed prefix; a first
+    // turn still running contributes no context.
+    const parentEvents = parent.session.events
+      ?? (await ctx.sessionQuery.readSession(parentSessionId)).events
+    const seed = forkSeed(parentEvents)
+    const inheritedTurns = completedTurnCount(seed)
     const settings = getSettings()
     const prefs = settings?.get().value as Partial<TutorPrefs> | null | undefined
     const defaultEffort = normalizeTutorEffort(prefs?.defaultReasoningEffort)
@@ -371,7 +420,9 @@ function buildApi(ctx: Context, tutors: Map<string, TutorRecord>, getSettings: (
         meta: {
           ...(cwd === undefined ? {} : { cwd }),
           parentSession: parentSessionId,
+          seedLength: seed.length,
         },
+        ...(seed.length === 0 ? {} : { seed }),
         agentOptions: { provider, model, ...(maxTokens === undefined ? {} : { maxTokens }) },
         setup: (agentCtx: Context) => {
           // Deliberately NO agentPresets.composeFrom(parent): the parent preset
@@ -411,6 +462,8 @@ function buildApi(ctx: Context, tutors: Map<string, TutorRecord>, getSettings: (
       activityAt: autoSend ? Date.now() : undefined,
       lastSeenAt: Date.now(),
       createdAt: Date.now(),
+      seedLength: seed.length,
+      inheritedTurns,
       transcript: createTranscriptFoldState(),
       handle,
     }
@@ -434,6 +487,8 @@ function buildApi(ctx: Context, tutors: Map<string, TutorRecord>, getSettings: (
       translateTarget: defaultTarget,
       promptSent: autoSend,
       autoSend,
+      seedLength: record.seedLength,
+      inheritedTurns: record.inheritedTurns,
     }
   }
 
@@ -497,7 +552,8 @@ function buildApi(ctx: Context, tutors: Map<string, TutorRecord>, getSettings: (
     const record = recordOf(windowId)
     record.lastSeenAt = Date.now()
     const snapshot = await ctx.sessionQuery.readSession(record.childSessionId)
-    const events = snapshot.events
+    // Seeded parent history is context for the model, not transcript for the window.
+    const events = eventsAfterSeed(snapshot.events, record.seedLength)
     syncTranscript(record, events)
     const state = turnLogState(events)
     let running = state === 'open'

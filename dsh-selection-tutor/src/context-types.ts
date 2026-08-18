@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Structural types for the DSH cordis services this plugin touches. The
  * browser bundle keeps value imports limited to platform modules, so these
  * declarations live in a shared type-only file.
@@ -19,6 +19,7 @@ export interface TutorWebServer {
 export interface TutorSessionHeader {
   cwd?: string
   parentSession?: string
+  seedLength?: number
 }
 
 export interface TutorSessionEvent {
@@ -63,7 +64,8 @@ export interface TutorAgentHandle {
 
 export interface TutorCreateAgentOptions {
   sessionId: string
-  meta?: { cwd?: string; parentSession?: string }
+  meta?: { cwd?: string; parentSession?: string; seedLength?: number }
+  seed?: readonly TutorSessionEvent[]
   agentOptions?: TutorAgentOptions
   setup?: (agentCtx: Context) => void | Promise<void>
 }

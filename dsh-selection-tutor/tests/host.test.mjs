@@ -43,7 +43,7 @@ function makeContext(options = {}) {
   const parentSession = {
     id: 'parent-1',
     header: { cwd: 'D:\\demo' },
-    events: [],
+    events: options.parentEvents ?? [],
     requestHeader: () => ({ config: { provider: 'deepseek', model: 'deepseek-v4-flash', reasoningEffort: 'high', maxTokens: 8000 } }),
   }
   const parentAgent = {
@@ -120,20 +120,22 @@ function makeContext(options = {}) {
       },
     },
     sessionQuery: {
-      readSession: async (id) => ({
-        session: { parentSession: 'parent-1' },
-        events: options.readEvents ?? [
-          { type: 'turn/start', time: 1, data: { turn: 1 } },
-            { type: 'user/message', data: { source: { kind: 'user', tutorDisplay: '再解释一下' }, content: [{ type: 'text', text: '解释 prompt' }] } },
-          { type: 'assistant/chunk', data: { turn: 1, step: 0, chunk: { type: 'text-delta', text: '这是' } } },
-          { type: 'assistant/chunk', data: { turn: 1, step: 0, chunk: { type: 'text-delta', text: '解释' } } },
-          { type: 'assistant/message', data: { turn: 1, step: 0, message: { content: [{ type: 'text', text: '这是解释' }] } } },
-          { type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'read', arguments: '{"path":"a"}' } },
-          { type: 'tool/result', data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', content: [{ type: 'text', text: 'file contents' }], isError: false }] } } },
-          { type: 'turn/end', time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
-        ],
-      }),
-    },
+      readSession: async (id) => id === 'parent-1'
+        ? { session: { parentSession: undefined }, events: options.parentEvents ?? [] }
+        : {
+            session: { parentSession: 'parent-1' },
+            events: options.readEvents ?? [
+              { type: 'turn/start', time: 1, data: { turn: 1 } },
+              { type: 'user/message', data: { source: { kind: 'user', tutorDisplay: '再解释一下' }, content: [{ type: 'text', text: '解释 prompt' }] } },
+              { type: 'assistant/chunk', data: { turn: 1, step: 0, chunk: { type: 'text-delta', text: '这是' } } },
+              { type: 'assistant/chunk', data: { turn: 1, step: 0, chunk: { type: 'text-delta', text: '解释' } } },
+              { type: 'assistant/message', data: { turn: 1, step: 0, message: { content: [{ type: 'text', text: '这是解释' }] } } },
+              { type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'read', arguments: '{"path":"a"}' } },
+              { type: 'tool/result', data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', content: [{ type: 'text', text: 'file contents' }], isError: false }] } } },
+              { type: 'turn/end', time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
+            ],
+          },
+      },
     permissionPresets: {
       current: () => 'read-only',
       set() { throw new Error('permission inheritance must be disabled for the tool-less tutor child') },
@@ -319,4 +321,58 @@ test('invalid translate targets are rejected at the API boundary', async () => {
   const bad = await callRoute(route, { windowId: started.body.value.windowId, translateTarget: 'klingon' }, 'tutor.translate')
   assert.equal(bad.body.ok, false)
   assert.equal(bad.body.error.code, 'bad-request')
+})
+
+
+test('tutor start seeds completed parent turns and hides seed history from the window transcript', async () => {
+  const parentEvents = [
+    { type: 'turn/start', time: 1, data: { turn: 1 } },
+    { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '父会话问题' }] } },
+    { type: 'assistant/message', data: { turn: 1, step: 0, message: { content: [{ type: 'text', text: '父会话回答' }] } } },
+    { type: 'turn/end', time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
+    { type: 'turn/start', time: 3, data: { turn: 2 } },
+    { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '父会话未完成问题' }] } },
+  ]
+  const childEvents = [
+    { type: 'turn/start', time: 10, data: { turn: 1 } },
+    { type: 'user/message', data: { source: { kind: 'user', tutorDisplay: '小窗问题' }, content: [{ type: 'text', text: '小窗 prompt' }] } },
+    { type: 'assistant/message', data: { turn: 1, step: 0, message: { content: [{ type: 'text', text: '小窗回答' }] } } },
+    { type: 'turn/end', time: 11, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const seededChildEvents = [...parentEvents.slice(0, 4), { type: 'session/end-seed', time: 5, data: {} }, ...childEvents]
+  const { ctx, routes, created } = makeContext({ parentEvents, readEvents: seededChildEvents })
+  apply(ctx)
+  const route = routes.get('/plugins/dsh-selection-tutor/api')
+
+  const started = await callRoute(route, { parentSessionId: 'parent-1', mode: 'explain', selectionText: 'x', autoSend: false })
+  assert.equal(started.body.ok, true)
+  assert.equal(started.body.value.seedLength, 4, 'open parent turn is excluded from the seed')
+  assert.equal(started.body.value.inheritedTurns, 1)
+  assert.deepEqual(created[0].seed, parentEvents.slice(0, 4))
+  assert.equal(created[0].meta.seedLength, 4)
+
+  const history = await callRoute(route, { windowId: started.body.value.windowId }, 'tutor.history')
+  assert.equal(history.body.ok, true)
+  const texts = history.body.value.messages.flatMap(message => message.blocks).map(block => block.text)
+  assert.equal(texts.includes('父会话问题'), false, 'seeded parent history must not appear in the window transcript')
+  assert.equal(texts.includes('父会话回答'), false, 'seeded parent history must not appear in the window transcript')
+  assert.equal(texts.includes('小窗问题'), true)
+  assert.equal(texts.includes('小窗回答'), true)
+})
+
+test('tutor start falls back to an empty snapshot while the parent is still generating its first turn', async () => {
+  const parentEvents = [
+    { type: 'turn/start', time: 1, data: { turn: 1 } },
+    { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '第一轮还在生成' }] } },
+  ]
+  const { ctx, routes, created } = makeContext({ parentEvents })
+  apply(ctx)
+  const route = routes.get('/plugins/dsh-selection-tutor/api')
+
+  const started = await callRoute(route, { parentSessionId: 'parent-1', mode: 'translate', selectionText: 'x', autoSend: false })
+  assert.equal(started.body.ok, true)
+  assert.equal(started.body.value.seedLength, 0)
+  assert.equal(started.body.value.inheritedTurns, 0)
+  assert.equal(Object.hasOwn(created[0], 'seed'), false, 'no completed prefix means no seed payload')
+  assert.equal(created[0].meta.seedLength, 0)
 })
