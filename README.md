@@ -20,6 +20,7 @@ DeepSeek Harness（DSH）个人插件合集——集中管理我自己维护的 
 | [dsh-market](dsh-market) | DSH 可视化插件市场快照备份（上游 [dsh-market/dsh-market](https://github.com/dsh-market/dsh-market)，v1.9.0 / `1d338fe`，已审计） | ✅ 备份 |
 | [dsh-find-plugin](dsh-find-plugin) | 会话内实时搜索 DSH 插件工具快照备份（上游 [awesome-dsh-plugin/dsh-find-plugin](https://github.com/awesome-dsh-plugin/dsh-find-plugin)，v0.3.6 / `e75dc2e`，已审计） | ✅ 备份 |
 | [dsh-better-sidebar](dsh-better-sidebar) | DSH Web 侧边栏完整工作台：文件管理/编辑/终端/Git/内嵌浏览器/后台任务 + 第三方 Tab 注册（上游 [omdsh-dev/DSH-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar)，v0.12.3，npm 快照备份） | ✅ 备份 |
+| [dsh-webui-perf](dsh-webui-perf) | WebUI 长会话性能优化：长代码流式渲染/历史加载/高亮缓存 + 内存清理开关（上游 [awa-123-cw/dsh-webui-perf](https://github.com/awa-123-cw/dsh-webui-perf)，已修复缺失 `perf.ts` 与 ref 类型问题） | ✅ 已修复 |
 
 ## 目录约定
 
