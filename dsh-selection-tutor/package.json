@@ -37,12 +37,14 @@
     "cordis.patch.yml",
     "src",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "scripts/cleanup-tutor-orphans.cjs"
   ],
   "scripts": {
     "build": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.json && tsdown",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "cleanup:orphans": "node scripts/cleanup-tutor-orphans.cjs"
   },
   "dependencies": {
     "schemastery": "^3.18.0"

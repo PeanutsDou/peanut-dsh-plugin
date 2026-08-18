@@ -2,29 +2,29 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { apply } from '../lib/index.js'
 
-function makeRequest(payload, method = 'tutor.start') {
+function makeRequest(payload, method = 'tutor.start', headers = { host: '127.0.0.1:3080' }) {
   return {
     method: 'POST',
     url: `/plugins/dsh-selection-tutor/api/${method}`,
-    headers: { host: '127.0.0.1:3080' },
+    headers,
     async *[Symbol.asyncIterator]() {
       yield Buffer.from(JSON.stringify(payload))
     },
   }
 }
 
-async function callRoute(route, payload, method = 'tutor.start') {
+async function callRoute(route, payload, method = 'tutor.start', headers = undefined) {
   let body = ''
   let status = 0
   const res = {
     writeHead(code) { status = code },
     end(chunk) { body += chunk.toString() },
   }
-  await route.handler(makeRequest(payload, method), res)
+  await route.handler(makeRequest(payload, method, headers), res)
   return { status, body: JSON.parse(body || '{}') }
 }
 
-function makeContext() {
+function makeContext(options = {}) {
   const routes = new Map()
   const effects = []
   const created = []
@@ -34,7 +34,6 @@ function makeContext() {
   let composeCalls = 0
   const requestHooks = []
 
-  const parentCtx = { mark: 'parent' }
   const childCtx = {
     on(name, cb) {
       if (name === 'agent/request') requestHooks.push(cb)
@@ -43,7 +42,7 @@ function makeContext() {
   }
   const parentSession = {
     id: 'parent-1',
-    header: { cwd: 'D:\demo' },
+    header: { cwd: 'D:\\demo' },
     events: [],
     requestHeader: () => ({ config: { provider: 'deepseek', model: 'deepseek-v4-flash', reasoningEffort: 'high', maxTokens: 8000 } }),
   }
@@ -51,22 +50,32 @@ function makeContext() {
     id: 'parent-1',
     options: { provider: 'deepseek', model: 'deepseek-v4-flash' },
     session: parentSession,
-    ctx: parentCtx,
+    ctx: { mark: 'parent' },
   }
 
   const ctx = {
     get(name) {
-      if (name === 'loader') return { entries: () => [{ options: { name: 'connection', config: { trustedHosts: [] } } }] }
+      if (name === 'loader') {
+        return {
+          entries: () => [{
+            options: {
+              id: 'connection',
+              name: '@deepseek-ai/dsh-client-connection',
+              config: { trustedHosts: options.trustedHosts ?? [] },
+            },
+          }],
+        }
+      }
       return undefined
     },
     inject(deps, callback) {
       if (deps.includes('settings')) {
         const settings = {
           register() {
-            return { get: () => ({ defaultReasoningEffort: 'off' }), watch: () => () => {} }
+            return { get: () => ({ defaultReasoningEffort: options.defaultEffort ?? 'off' }), watch: () => () => {} }
           },
           describe() {
-            return [{ ns: 'dsh-selection-tutor', value: { defaultReasoningEffort: 'off' }, revision: 1 }]
+            return [{ ns: 'dsh-selection-tutor', value: { defaultReasoningEffort: options.defaultEffort ?? 'off' }, revision: 1 }]
           },
           update: async () => {},
         }
@@ -79,16 +88,16 @@ function makeContext() {
     },
     agents: {
       get(id) { return id === 'parent-1' ? parentAgent : undefined },
-      async create(options) {
-        created.push(options)
-        if (options.setup !== undefined) await options.setup(childCtx)
+      async create(agentOptions) {
+        created.push(agentOptions)
+        if (agentOptions.setup !== undefined) await agentOptions.setup(childCtx)
         const handle = {
           agent: {
-            id: options.sessionId,
-            options: options.agentOptions ?? {},
+            id: agentOptions.sessionId,
+            options: agentOptions.agentOptions ?? {},
             session: {
-              id: options.sessionId,
-              header: { cwd: options.meta?.cwd, parentSession: options.meta?.parentSession },
+              id: agentOptions.sessionId,
+              header: { cwd: agentOptions.meta?.cwd, parentSession: agentOptions.meta?.parentSession },
               events: [
                 { type: 'turn/start', time: 1, data: {} },
                 { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '解释 prompt' }] } },
@@ -99,30 +108,38 @@ function makeContext() {
             followup(message) { followedUp.push(message) },
             cancel(cause) { followedUp.push({ cancel: cause }) },
           },
-          dispose: async () => { disposed.push(options.sessionId) },
+          dispose: async () => { disposed.push(agentOptions.sessionId) },
         }
         return handle
       },
     },
     workspaceRegistry: {
-      archiveSession: async (id) => { archived.push(id) },
+      archiveSession: async (id) => {
+        if (options.archiveError !== undefined) throw options.archiveError
+        archived.push(id)
+      },
     },
     sessionQuery: {
       readSession: async (id) => ({
         session: { parentSession: 'parent-1' },
-        events: [
-          { type: 'turn/start', time: 1, data: {} },
+        events: options.readEvents ?? [
+          { type: 'turn/start', time: 1, data: { turn: 1 } },
           { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '解释 prompt' }] } },
-          { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '这是解释' }] } } },
+          { type: 'assistant/chunk', data: { turn: 1, step: 0, chunk: { type: 'text-delta', text: '这是' } } },
+          { type: 'assistant/chunk', data: { turn: 1, step: 0, chunk: { type: 'text-delta', text: '解释' } } },
+          { type: 'assistant/message', data: { turn: 1, step: 0, message: { content: [{ type: 'text', text: '这是解释' }] } } },
+          { type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'read', arguments: '{"path":"a"}' } },
+          { type: 'tool/result', data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', content: [{ type: 'text', text: 'file contents' }], isError: false }] } } },
+          { type: 'turn/end', time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
         ],
       }),
     },
     permissionPresets: {
       current: () => 'read-only',
-      set(session, preset) { session._preset = preset },
+      set() { throw new Error('permission inheritance must be disabled for the tool-less tutor child') },
     },
     agentPresets: {
-      composeFrom(agentCtx, parent) { composeCalls += 1; return 'composed' },
+      composeFrom() { composeCalls += 1; return 'composed' },
     },
     effect(callback, _label) {
       const dispose = callback()
@@ -134,14 +151,14 @@ function makeContext() {
   return { ctx, routes, effects, created, archived, followedUp, disposed, getComposeCalls: () => composeCalls, requestHooks, parentAgent }
 }
 
-test('tutor host creates an archived child, forces effort, and disposes on close', async () => {
-  const { ctx, routes, created, archived, followedUp, disposed, getComposeCalls } = makeContext()
+test('tutor host creates a tool-less archived child, forces effort live, and disposes on close', async () => {
+  const { ctx, routes, created, archived, followedUp, disposed, getComposeCalls, requestHooks } = makeContext()
   apply(ctx)
 
   const route = routes.get('/plugins/dsh-selection-tutor/api')
   assert.ok(route, 'route registered')
 
-  const started = await callRoute(route, { parentSessionId: 'parent-1', mode: 'explain', selectionText: 'context manager' })
+  const started = await callRoute(route, { parentSessionId: 'parent-1', mode: 'explain', selectionText: 'context manager', autoSend: false })
   assert.equal(started.status, 200)
   assert.equal(started.body.ok, true)
   assert.equal(started.body.value.reasoningEffort, 'off')
@@ -150,26 +167,48 @@ test('tutor host creates an archived child, forces effort, and disposes on close
 
   assert.equal(created.length, 1)
   assert.equal(created[0].meta.parentSession, 'parent-1')
-  assert.equal(created[0].meta.cwd, 'D:\demo')
+  assert.equal(created[0].meta.cwd, 'D:\\demo')
   assert.equal(created[0].agentOptions.provider, 'deepseek')
   assert.equal(created[0].agentOptions.model, 'deepseek-v4-flash')
-  assert.equal(getComposeCalls(), 1)
+  assert.equal(getComposeCalls(), 0, 'parent preset (and its guardian retry loop) must not be inherited')
   assert.deepEqual(archived, [childId])
-  assert.equal(followedUp.length, 1)
-  assert.match(followedUp[0].content[0].text, /<selected_text>/)
 
+  // explain mode does not auto-send; the first followup anchors the selection plus the question.
   const followed = await callRoute(route, { windowId: childId, text: '再解释一下' }, 'tutor.followup')
   assert.equal(followed.body.ok, true)
-  assert.equal(followedUp.length, 2)
+  assert.equal(followedUp.length, 1)
+  const firstPrompt = followedUp[0].content[0].text
+  assert.match(firstPrompt, /<selected_text>\ncontext manager\n<\/selected_text>/)
+  assert.match(firstPrompt, /<user_question>\n再解释一下\n<\/user_question>/)
 
+  // Server-side duplicate guard: a second followup while the turn is open is refused.
+  const double = await callRoute(route, { windowId: childId, text: '再发一次' }, 'tutor.followup')
+  assert.equal(double.body.ok, false)
+  assert.equal(double.body.error.code, 'busy')
+  assert.equal(followedUp.length, 1)
+
+  // The effort switch must affect the actual agent/request waterfall.
+  const requestAt = async () => requestHooks[0]({}, async () => ({ provider: 'deepseek', model: 'deepseek-v4-flash', reasoningEffort: 'off' }))
+  assert.deepEqual(await requestAt(), { provider: 'deepseek', model: 'deepseek-v4-flash', reasoningEffort: 'off' })
   const effort = await callRoute(route, { windowId: childId, reasoningEffort: 'max' }, 'tutor.effort')
   assert.equal(effort.body.ok, true)
   assert.equal(effort.body.value.reasoningEffort, 'max')
+  assert.deepEqual(await requestAt(), { provider: 'deepseek', model: 'deepseek-v4-flash', reasoningEffort: 'max' })
+
+  // Unsupported / legacy levels are refused at the API boundary.
+  const bad = await callRoute(route, { windowId: childId, reasoningEffort: 'low' }, 'tutor.effort')
+  assert.equal(bad.body.ok, false)
+  assert.equal(bad.body.error.code, 'bad-request')
 
   const history = await callRoute(route, { windowId: childId }, 'tutor.history')
   assert.equal(history.body.ok, true)
-  assert.equal(history.body.value.running, true)
-  assert.equal(history.body.value.messages.length, 2)
+  assert.equal(history.body.value.running, false)
+  const assistant = history.body.value.messages.find(message => message.role === 'assistant')
+  const toolBlocks = assistant.blocks.filter(block => block.type === 'tool')
+  assert.equal(toolBlocks.filter(block => block.name === 'read').length, 1, 'tool call must not duplicate')
+  const resultBlock = toolBlocks.find(block => block.result !== undefined)
+  assert.equal(resultBlock.name, 'call-1', 'tool/result pairing reads the real tool-result block')
+  assert.equal(resultBlock.result, 'file contents')
 
   const stopped = await callRoute(route, { windowId: childId }, 'tutor.stop')
   assert.equal(stopped.body.ok, true)
@@ -184,14 +223,55 @@ test('tutor host creates an archived child, forces effort, and disposes on close
   assert.equal(second.body.error.code, 'window-unavailable')
 })
 
-test('one tutor window per parent conversation', async () => {
-  const { ctx, routes } = makeContext()
+test('translate mode auto-sends once and one tutor window per parent conversation', async () => {
+  const { ctx, routes, followedUp } = makeContext()
   apply(ctx)
   const route = routes.get('/plugins/dsh-selection-tutor/api')
 
   const first = await callRoute(route, { parentSessionId: 'parent-1', mode: 'translate', selectionText: 'hello' })
   assert.equal(first.body.ok, true)
+  assert.equal(followedUp.length, 1)
   const second = await callRoute(route, { parentSessionId: 'parent-1', mode: 'explain', selectionText: 'world' })
   assert.equal(second.body.ok, false)
   assert.equal(second.body.error.code, 'window-exists')
+})
+
+test('archive failure rolls back the created child agent', async () => {
+  const { ctx, routes, disposed, archived } = makeContext({ archiveError: new Error('archive down') })
+  apply(ctx)
+  const route = routes.get('/plugins/dsh-selection-tutor/api')
+  const result = await callRoute(route, { parentSessionId: 'parent-1', mode: 'translate', selectionText: 'hello' })
+  assert.equal(result.status, 500)
+  assert.deepEqual(archived, [])
+  assert.equal(disposed.length, 1)
+})
+
+test('legacy low effort setting resolves to high without rejecting registration', async () => {
+  const { ctx, routes } = makeContext({ defaultEffort: 'low' })
+  apply(ctx)
+  const route = routes.get('/plugins/dsh-selection-tutor/api')
+  const started = await callRoute(route, { parentSessionId: 'parent-1', mode: 'explain', selectionText: 'x' })
+  assert.equal(started.body.ok, true)
+  assert.equal(started.body.value.reasoningEffort, 'high')
+})
+
+test('non-loopback requests use the client-connection trustedHosts row', async () => {
+  const { ctx, routes } = makeContext({ trustedHosts: ['192.168.1.10:3080'] })
+  apply(ctx)
+  const route = routes.get('/plugins/dsh-selection-tutor/api')
+  const ok = await callRoute(
+    route,
+    { parentSessionId: 'parent-1', mode: 'translate', selectionText: 'hello' },
+    'tutor.start',
+    { host: '192.168.1.10:3080', origin: 'http://192.168.1.10:3080' },
+  )
+  assert.equal(ok.body.ok, true)
+
+  const denied = await callRoute(
+    route,
+    { parentSessionId: 'parent-1', mode: 'translate', selectionText: 'hello' },
+    'tutor.start',
+    { host: '192.168.1.10:3080', origin: 'http://evil.test' },
+  )
+  assert.equal(denied.status, 403)
 })

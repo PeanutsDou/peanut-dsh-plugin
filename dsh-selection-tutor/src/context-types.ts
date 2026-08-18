@@ -118,6 +118,10 @@ export interface TutorSlotsService {
   register(options: Record<string, unknown>, component: unknown): () => void
 }
 
+export interface TutorLoaderService {
+  entries?: () => Iterable<{ options: { id?: string; name?: string; config?: unknown } }>
+}
+
 declare module 'cordis' {
   interface Context {
     webServer: TutorWebServer
@@ -129,6 +133,7 @@ declare module 'cordis' {
     agentPresets: TutorAgentPresets
     settings: TutorSettingsService
     slots: TutorSlotsService
+    loader?: TutorLoaderService
     inject(deps: string[], callback: (ctx: Context) => void): void
     get(name: string): unknown | undefined
     on(name: string, listener: (...args: any[]) => any): () => void

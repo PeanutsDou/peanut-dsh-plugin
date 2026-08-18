@@ -1,7 +1,8 @@
 /** Browser API client for the host /plugins/dsh-selection-tutor/api routes. */
+import { TUTOR_PREFS_DEFAULTS, type TutorEffort } from '../settings-shared.ts'
 
+export type { TutorEffort }
 export type TutorMode = 'explain' | 'translate'
-export type TutorEffort = 'off' | 'low' | 'high' | 'max'
 
 export interface ApiError { code: string; message: string }
 export type ApiResult<T> = { ok: true; value: T } | { ok: false; error: ApiError }
@@ -26,6 +27,8 @@ export interface StartResult {
   autoSend: boolean
 }
 
+export const TUTOR_DEFAULT_EFFORT: TutorEffort = TUTOR_PREFS_DEFAULTS.defaultReasoningEffort
+
 async function call<T>(method: string, payload: Record<string, unknown>): Promise<ApiResult<T>> {
   try {
     const res = await fetch(`/plugins/dsh-selection-tutor/api/${method}`, {
@@ -37,6 +40,18 @@ async function call<T>(method: string, payload: Record<string, unknown>): Promis
   } catch {
     return { ok: false, error: { code: 'network', message: '无法连接插件服务' } }
   }
+}
+
+/** Fire-and-forget dispose for pagehide/unload, using fetch keepalive so it survives navigation. */
+export function disposeKeepalive(windowId: string): void {
+  try {
+    void fetch(`/plugins/dsh-selection-tutor/api/tutor.dispose`, {
+      method: 'POST',
+      keepalive: true,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ windowId }),
+    })
+  } catch { /* the window is going away */ }
 }
 
 export const api = {

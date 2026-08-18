@@ -7,11 +7,12 @@
  * - The host creates one hidden archived session per window; closing the
  *   window disposes it.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from '../context-types.ts'
-import { api, type StartResult, type TutorBlock, type TutorEffort, type TutorMessage, type TutorMode } from './api.ts'
+import { normalizeTutorEffort, TUTOR_EFFORTS } from '../settings-shared.ts'
+import { api, disposeKeepalive, TUTOR_DEFAULT_EFFORT, type StartResult, type TutorBlock, type TutorEffort, type TutorMessage, type TutorMode } from './api.ts'
 
 export const name = 'dsh-selection-tutor-client'
 export const inject = ['sessions', 'slots']
@@ -19,6 +20,7 @@ export const inject = ['sessions', 'slots']
 interface SelectionAnchor { text: string; x: number; y: number }
 interface WindowPosition { left: number; top: number; width: number; height: number }
 
+const STYLE_ID = 'dsh-selection-tutor-styles'
 const POSITION_KEY = 'dsh-selection-tutor-window-position'
 const DEFAULT_POSITION: WindowPosition = { left: 96, top: 72, width: 440, height: 540 }
 const MIN_WIDTH = 360
@@ -27,7 +29,6 @@ const MAX_FRACTION = 0.86
 
 const EFFORT_LABELS: Record<TutorEffort, string> = {
   off: '关闭思考',
-  low: '低',
   high: '高',
   max: '最大',
 }
@@ -60,16 +61,15 @@ function persistPosition(position: WindowPosition): void {
 }
 
 function ensureStyles(): void {
-  const id = 'dsh-selection-tutor-styles'
-  if (document.getElementById(id) !== null) return
+  if (document.getElementById(STYLE_ID) !== null) return
   const style = document.createElement('style')
-  style.id = id
+  style.id = STYLE_ID
   style.textContent = `
 .dsh-tutor-menu{position:fixed;z-index:2147483000;display:flex;gap:6px;padding:5px;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#1e2128);box-shadow:0 10px 30px rgba(0,0,0,.3);font:12px system-ui;transform:translate(-50%,-100%)}
 .dsh-tutor-menu button{appearance:none;border:1px solid transparent;border-radius:7px;padding:5px 12px;background:transparent;color:var(--dsw-alias-label-primary,#e7e9ee);cursor:pointer;font:inherit}
 .dsh-tutor-menu button:hover{background:var(--dsw-alias-bg-layer-3,#2a2e38);border-color:var(--dsw-alias-border-l2,#3a3f4b)}
 .dsh-tutor-window{position:fixed;z-index:2147483001;display:flex;flex-direction:column;min-width:320px;min-height:240px;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:14px;background:var(--dsw-alias-bg-layer-2,#1e2128);color:var(--dsw-alias-label-primary,#e7e9ee);box-shadow:0 22px 70px rgba(0,0,0,.45);overflow:hidden;font:13px/1.6 system-ui}
-.dsh-tutor-title{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--dsw-alias-border-l2,#3a3f4b);background:var(--dsw-alias-bg-layer-3,#252932);cursor:grab;user-select:none}
+.dsh-tutor-title{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--dsw-alias-border-l2,#3a3f4b);background:var(--dsw-alias-bg-layer-3,#252932);cursor:grab;user-select:none;touch-action:none}
 .dsh-tutor-title.dragging{cursor:grabbing}
 .dsh-tutor-title-main{min-width:0;flex:1}
 .dsh-tutor-title-mode{font-weight:600}
@@ -91,14 +91,14 @@ function ensureStyles(): void {
 .dsh-tutor-actions button{appearance:none;border:1px solid var(--dsw-alias-border-l2,#3a3f4b);border-radius:9px;padding:6px 12px;background:var(--dsw-alias-bg-layer-3,#2a2e38);color:inherit;cursor:pointer;font:inherit;white-space:nowrap}
 .dsh-tutor-actions button:disabled{opacity:.45;cursor:default}
 .dsh-tutor-actions button.primary{background:var(--dsw-alias-brand-primary,#3b82f6);border-color:var(--dsw-alias-brand-primary,#3b82f6);color:#fff}
-.dsh-tutor-resize{position:absolute;right:0;bottom:0;width:20px;height:20px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 50%,var(--dsw-alias-label-dimmed,#6b7280) 50%);opacity:.7}
+.dsh-tutor-resize{position:absolute;right:0;bottom:0;width:20px;height:20px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 50%,var(--dsw-alias-label-dimmed,#6b7280) 50%);opacity:.7;touch-action:none}
 .dsh-tutor-resize:hover{opacity:1}
 `
   document.head.append(style)
 }
 
 function SettingsCard(): JSX.Element {
-  const [effort, setEffort] = useState<TutorEffort>('off')
+  const [effort, setEffort] = useState<TutorEffort>(TUTOR_DEFAULT_EFFORT)
   const [revision, setRevision] = useState<number | undefined>(undefined)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -107,15 +107,14 @@ function SettingsCard(): JSX.Element {
     void api.settingsGet().then((result) => {
       if (!result.ok) return
       const value = result.value.value as { defaultReasoningEffort?: unknown } | null | undefined
-      if (value !== null && value !== undefined) {
-        const raw = value.defaultReasoningEffort
-        if (raw === 'off' || raw === 'low' || raw === 'high' || raw === 'max') setEffort(raw)
-      }
+      if (value !== null && value !== undefined) setEffort(normalizeTutorEffort(value.defaultReasoningEffort))
       if (typeof result.value.revision === 'number') setRevision(result.value.revision)
     })
   }, [])
 
   const update = async (next: TutorEffort): Promise<void> => {
+    if (saving) return
+    const previous = effort
     setEffort(next)
     setSaving(true)
     setError(null)
@@ -124,6 +123,7 @@ function SettingsCard(): JSX.Element {
     if (result.ok) {
       if (typeof result.value.revision === 'number') setRevision(result.value.revision)
     } else {
+      setEffort(previous)
       setError(result.error.message)
     }
   }
@@ -133,13 +133,13 @@ function SettingsCard(): JSX.Element {
       <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
         <span style={{ color: 'var(--dsw-alias-label-secondary)' }}>小窗默认思考强度</span>
         <select value={effort} disabled={saving} onChange={event => { void update(event.currentTarget.value as TutorEffort) }}>
-          {(Object.keys(EFFORT_LABELS) as TutorEffort[]).map(id => (
+          {TUTOR_EFFORTS.map(id => (
             <option key={id} value={id}>{EFFORT_LABELS[id]}</option>
           ))}
         </select>
       </label>
       <p style={{ margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>
-        仅控制新建学习小窗的思考强度；小窗内仍可临时切换，模型固定继承当前主会话，不可更换。
+        仅控制新建学习小窗的思考强度（off / high / max）；小窗内仍可临时切换，模型固定继承当前主会话，不可更换。
       </p>
       {error !== null ? <p style={{ margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-error)' }}>{error}</p> : null}
     </div>
@@ -166,11 +166,14 @@ function SelectionMenu({ current, onPick }: { current: string | undefined; onPic
       setLocal({ text, x: rect.left + rect.width / 2, y: rect.top })
     }
     const onMouseUp = (): void => { window.setTimeout(compute, 0) }
+    const onScroll = (): void => { setLocal(null) }
     document.addEventListener('mouseup', onMouseUp)
     document.addEventListener('selectionchange', compute)
+    document.addEventListener('scroll', onScroll, true)
     return () => {
       document.removeEventListener('mouseup', onMouseUp)
       document.removeEventListener('selectionchange', compute)
+      document.removeEventListener('scroll', onScroll, true)
     }
   }, [])
 
@@ -200,19 +203,29 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
   const [closing, setClosing] = useState(false)
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; origin: WindowPosition } | null>(null)
   const resizeRef = useRef<{ pointerId: number; startX: number; startY: number; origin: WindowPosition } | null>(null)
+  const sendingRef = useRef(false)
+  const refreshingRef = useRef(false)
+  const closingRef = useRef(false)
+  const stickToBottomRef = useRef(true)
   const latestPosition = useRef(position)
   latestPosition.current = position
 
   const refresh = useCallback(async (): Promise<void> => {
-    const result = await api.history({ windowId: win.windowId })
-    if (!result.ok) {
-      if (result.error.code === 'window-unavailable') onClose()
-      else setError(result.error.message)
-      return
+    if (refreshingRef.current) return
+    refreshingRef.current = true
+    try {
+      const result = await api.history({ windowId: win.windowId })
+      if (!result.ok) {
+        if (result.error.code === 'window-unavailable') onClose()
+        else setError(result.error.message)
+        return
+      }
+      setError(null)
+      setMessages(result.value.messages)
+      setRunning(result.value.running)
+    } finally {
+      refreshingRef.current = false
     }
-    setError(null)
-    setMessages(result.value.messages)
-    setRunning(result.value.running)
   }, [win.windowId, onClose])
 
   useEffect(() => {
@@ -220,6 +233,14 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
     const timer = window.setInterval(() => { void refresh() }, 700)
     return () => { window.clearInterval(timer) }
   }, [refresh])
+
+  useEffect(() => {
+    const onPageHide = (): void => {
+      if (!closingRef.current) disposeKeepalive(win.windowId)
+    }
+    window.addEventListener('pagehide', onPageHide)
+    return () => { window.removeEventListener('pagehide', onPageHide) }
+  }, [win.windowId])
 
   useEffect(() => {
     const onResizeViewport = (): void => {
@@ -240,40 +261,50 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
 
   const send = async (): Promise<void> => {
     const text = draft.trim()
-    if (text === '' || running) return
+    if (text === '' || running || sendingRef.current) return
+    sendingRef.current = true
     setDraft('')
     setRunning(true)
+    stickToBottomRef.current = true
     setError(null)
-    const result = await api.followup({ windowId: win.windowId, text })
-    if (!result.ok) {
-      setRunning(false)
-      setError(result.error.message)
-      return
+    try {
+      const result = await api.followup({ windowId: win.windowId, text })
+      if (!result.ok) {
+        setRunning(false)
+        setError(result.error.message)
+        return
+      }
+      await refresh()
+    } finally {
+      sendingRef.current = false
     }
-    await refresh()
   }
 
   const stop = async (): Promise<void> => {
+    if (!running) return
     const result = await api.stop({ windowId: win.windowId })
     if (!result.ok) setError(result.error.message)
     setRunning(false)
   }
 
   const changeEffort = async (next: TutorEffort): Promise<void> => {
+    if (next === effort) return
+    const previous = effort
     setEffort(next)
     const result = await api.effort({ windowId: win.windowId, reasoningEffort: next })
     if (!result.ok) {
       setError(result.error.message)
-      setEffort(win.reasoningEffort)
+      setEffort(previous)
     }
   }
 
   const close = async (): Promise<void> => {
-    if (closing) return
+    if (closingRef.current) return
     if (running) {
       const ok = window.confirm('小窗正在生成内容，关闭会取消当前回答并销毁这个临时分支。确定关闭吗？')
       if (!ok) return
     }
+    closingRef.current = true
     setClosing(true)
     await api.dispose({ windowId: win.windowId })
     onClose()
@@ -310,10 +341,12 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
   const onResizePointerMove = (event: React.PointerEvent<HTMLDivElement>): void => {
     const resize = resizeRef.current
     if (resize === null || resize.pointerId !== event.pointerId) return
+    const maxWidth = Math.max(MIN_WIDTH, Math.min(window.innerWidth * MAX_FRACTION, window.innerWidth - resize.origin.left))
+    const maxHeight = Math.max(MIN_HEIGHT, Math.min(window.innerHeight * MAX_FRACTION, window.innerHeight - resize.origin.top))
     const next: WindowPosition = {
       ...resize.origin,
-      width: clamp(resize.origin.width + event.clientX - resize.startX, MIN_WIDTH, window.innerWidth * MAX_FRACTION),
-      height: clamp(resize.origin.height + event.clientY - resize.startY, MIN_HEIGHT, window.innerHeight * MAX_FRACTION),
+      width: clamp(resize.origin.width + event.clientX - resize.startX, MIN_WIDTH, maxWidth),
+      height: clamp(resize.origin.height + event.clientY - resize.startY, MIN_HEIGHT, maxHeight),
     }
     latestPosition.current = next
     setPosition(next)
@@ -329,11 +362,20 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const scrollRef = useCallback((node: HTMLDivElement | null) => {
     messagesRef.current = node
-    if (node !== null) node.scrollTop = node.scrollHeight
+    if (node !== null) {
+      stickToBottomRef.current = true
+      node.scrollTop = node.scrollHeight
+    }
+  }, [])
+  const handleMessagesScroll = useCallback((): void => {
+    const node = messagesRef.current
+    if (node === null) return
+    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight
+    stickToBottomRef.current = distanceFromBottom < 64
   }, [])
   useEffect(() => {
     const node = messagesRef.current
-    if (node !== null) node.scrollTop = node.scrollHeight
+    if (node !== null && stickToBottomRef.current) node.scrollTop = node.scrollHeight
   }, [messages])
 
   return (
@@ -346,20 +388,20 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
         <button type="button" className="dsh-tutor-close" disabled={closing} onPointerDown={event => { event.stopPropagation() }} onClick={() => { void close() }}>关闭</button>
       </div>
       <div className="dsh-tutor-meta">
-        <span>模型：{win.model}（继承主会话）</span>
+        <span>模型：{win.model}（继承主会话，无工具只读）</span>
         <label>
           思考强度
           <select value={effort} onChange={event => { void changeEffort(event.currentTarget.value as TutorEffort) }}>
-            {(Object.keys(EFFORT_LABELS) as TutorEffort[]).map(id => <option key={id} value={id}>{EFFORT_LABELS[id]}</option>)}
+            {TUTOR_EFFORTS.map(id => <option key={id} value={id}>{EFFORT_LABELS[id]}</option>)}
           </select>
         </label>
         {running ? <span>生成中…</span> : null}
       </div>
-      <div className="dsh-tutor-messages" ref={scrollRef}>
+      <div className="dsh-tutor-messages" ref={scrollRef} onScroll={handleMessagesScroll}>
         {messages.length === 0 ? <div className="dsh-tutor-empty">{win.autoSend ? '正在准备临时会话…' : '小窗已就绪，请基于选中的内容提问。'}</div> : null}
         {messages.map((message, index) => (
           <div key={`${message.role}-${index}`} className={`dsh-tutor-msg ${message.role}`}>
-            {message.blocks.map((block, blockIndex) => {
+            {message.blocks.map((block: TutorBlock, blockIndex) => {
               if (block.type === 'reasoning') return <div key={blockIndex} className="dsh-tutor-msg reasoning">{block.text}</div>
               if (block.type === 'error') return <div key={blockIndex} style={{ color: 'var(--dsw-alias-label-error,#ef4444)', whiteSpace: 'pre-wrap' }}>{block.text}</div>
               if (block.type === 'tool') {
@@ -379,12 +421,12 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
       </div>
       {error !== null ? <p className="dsh-tutor-error">{error}</p> : null}
       <div className="dsh-tutor-composer">
-       
         <textarea
           value={draft}
           placeholder={win.mode === 'explain' ? '就选中的内容提问…' : '继续追问…'}
           onChange={event => { setDraft(event.currentTarget.value) }}
           onKeyDown={event => {
+            if (event.nativeEvent.isComposing) return
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
               void send()
@@ -392,7 +434,7 @@ function TutorWindow({ win, onClose }: { win: StartResult & { mode: TutorMode; s
           }}
         />
         <div className="dsh-tutor-actions">
-          <button type="button" className="primary" disabled={running || draft.trim() === ''} onClick={() => { void send() }}>发送</button>
+          <button type="button" className="primary" disabled={running || sendingRef.current || draft.trim() === ''} onClick={() => { void send() }}>发送</button>
           <button type="button" disabled={!running} onClick={() => { void stop() }}>停止</button>
         </div>
       </div>
@@ -414,8 +456,8 @@ function TutorRoot({ ctx }: { ctx: Context }): JSX.Element {
     () => undefined,
   )
   const [win, setWin] = useState<ActiveWindow | null>(null)
-  const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
+  const startingRef = useRef(false)
 
   useEffect(() => {
     if (win !== null && current !== win.parentSessionId) {
@@ -426,21 +468,20 @@ function TutorRoot({ ctx }: { ctx: Context }): JSX.Element {
 
   const pick = useCallback(async (mode: TutorMode, text: string): Promise<void> => {
     const parentSessionId = ctx.sessions.list.getSnapshot().current
-    if (parentSessionId === undefined || starting) return
-    setStarting(true)
+    if (parentSessionId === undefined || startingRef.current) return
+    startingRef.current = true
     setStartError(null)
-    const result = await api.start({ parentSessionId, mode, selectionText: text, autoSend: mode === 'translate' })
-    setStarting(false)
-    if (result.ok) {
-      setWin({ ...result.value, mode, selectionText: text, parentSessionId })
-    } else {
-      setStartError(result.error.message)
-      if (result.error.code === 'window-exists' && win !== null) {
-        // Surface the existing window; the user can close it and try again.
-        setStartError('当前会话已有一个学习小窗，请先关闭它。')
+    try {
+      const result = await api.start({ parentSessionId, mode, selectionText: text, autoSend: mode === 'translate' })
+      if (result.ok) {
+        setWin({ ...result.value, mode, selectionText: text, parentSessionId })
+      } else {
+        setStartError(result.error.message)
       }
+    } finally {
+      startingRef.current = false
     }
-  }, [ctx.sessions.list, starting, win])
+  }, [ctx.sessions.list])
 
   const close = useCallback((): void => { setWin(null) }, [])
 
@@ -481,7 +522,7 @@ function registerModelConfigCard(): () => void {
   const card: ModelConfigCardShape = {
     id: 'dsh-selection-tutor',
     title: '划词学习小窗',
-    description: '选中文字后弹出“解释/翻译”浮动小窗的默认思考强度。模型固定继承主会话，不提供模型切换。',
+    description: '选中文字后弹出“解释/翻译”浮动小窗的默认思考强度（off / high / max）。模型固定继承主会话，不提供模型切换。',
     order: 100,
     render: () => <SettingsCard />,
   }
@@ -503,7 +544,7 @@ function registerModelConfigCard(): () => void {
 
 export function apply(ctx: Context): void {
   ensureStyles()
-  registerModelConfigCard()
+  const unregisterModelConfigCard = registerModelConfigCard()
 
   const host = document.createElement('div')
   host.setAttribute('data-dsh-selection-tutor', '')
@@ -513,8 +554,10 @@ export function apply(ctx: Context): void {
 
   ctx.effect(() => {
     return () => {
+      unregisterModelConfigCard()
       root.unmount()
       host.remove()
+      document.getElementById(STYLE_ID)?.remove()
     }
   }, 'dsh-selection-tutor: client mount')
 }
