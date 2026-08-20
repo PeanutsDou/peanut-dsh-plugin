@@ -590,6 +590,7 @@ export function apply(ctx: ClientContext): void {
   try {
     ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
       name: 'settings.plugin.item',
+      key: 'dsh-turn-ui',
       id: 'dsh-turn-ui',
       order: 60,
       inject: () => ({
