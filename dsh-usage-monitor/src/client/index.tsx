@@ -729,6 +729,7 @@ export function apply(ctx: ClientContext): void {
     scope.subscribe(() => { store.set(project()) })
     ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
       name: 'settings.plugin.item',
+      key: 'dsh-usage-monitor',
       id: 'dsh-usage-monitor',
       order: 50,
       inject: () => ({
