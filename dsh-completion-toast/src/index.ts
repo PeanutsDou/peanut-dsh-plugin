@@ -137,8 +137,11 @@ export function apply(ctx: Context): void {
           try {
             const url = new URL(req.url ?? '/', 'http://127.0.0.1')
             const sessionId = url.searchParams.get('sessionId') ?? ''
+            console.log('[dsh-completion-toast] notify route called', sessionId)
             if (sessionId !== '') notifySession(sessionId)
-          } catch { /* ignore */ }
+          } catch (error) {
+            console.error('[dsh-completion-toast] notify route error', error)
+          }
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
           res.end(JSON.stringify({ ok: true }))
         },
