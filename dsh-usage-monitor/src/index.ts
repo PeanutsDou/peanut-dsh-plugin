@@ -22,7 +22,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { buildLibraryStatus, refreshLibrary } from './plugin-library'
+import { buildLibraryStatus, refreshLibrary } from './plugin-library.js'
 
 export const name = 'dsh-usage-monitor'
 export const inject = ['settings', 'credentials', 'webServer', 'sessions']
