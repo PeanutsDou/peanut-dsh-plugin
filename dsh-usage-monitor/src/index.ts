@@ -22,6 +22,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { buildLibraryStatus, refreshLibrary } from './plugin-library'
 
 export const name = 'dsh-usage-monitor'
 export const inject = ['settings', 'credentials', 'webServer', 'sessions']
@@ -31,6 +32,8 @@ export interface UsageMonitorConfig {
   balanceUrl: string
   credentialRef: string
   balancePollMs: number
+  /** Root of the personal plugin library manifest (`library.json`). */
+  libraryRoot: string
   /** CNY per 1M tokens before the peak/off-peak schedule starts (deepseek-v4-pro). */
   priceCacheHitPerM: number
   priceInputPerM: number
@@ -59,6 +62,7 @@ export const ConfigSchema: z<UsageMonitorConfig> = z.object({
   balanceUrl: z.string().default('https://api.deepseek.com'),
   credentialRef: z.string().default('DEEPSEEK_API_KEY'),
   balancePollMs: z.number().default(600000),
+  libraryRoot: z.string().default('D:\\douzhongjun\\dsh-plugin-library'),
   priceCacheHitPerM: z.number().default(0.025),
   priceInputPerM: z.number().default(3),
   priceOutputPerM: z.number().default(6),
@@ -84,6 +88,7 @@ export const DEFAULT_CONFIG: UsageMonitorConfig = {
   balanceUrl: 'https://api.deepseek.com',
   credentialRef: 'DEEPSEEK_API_KEY',
   balancePollMs: 600000,
+  libraryRoot: 'D:\\douzhongjun\\dsh-plugin-library',
   // Official deepseek-v4-pro prices before 2026-08-17.
   priceCacheHitPerM: 0.025,
   priceInputPerM: 3,
@@ -1001,9 +1006,56 @@ export function apply(ctx: Context, config?: Partial<UsageMonitorConfig>): void 
           res.end(JSON.stringify(await buildStatus()))
         },
       })
+      const disposeLibrary = webServer.register({
+        kind: 'exact',
+        path: '/plugins/dsh-usage-monitor/plugin-library',
+        handler: async (_req: HttpRequest, res: HttpResponse) => {
+          try {
+            const library = await buildLibraryStatus(dynamic().libraryRoot)
+            res.writeHead(200, {
+              'content-type': 'application/json; charset=utf-8',
+              'cache-control': 'no-store',
+            })
+            res.end(JSON.stringify(library))
+          } catch (error) {
+            res.writeHead(500, {
+              'content-type': 'application/json; charset=utf-8',
+              'cache-control': 'no-store',
+            })
+            res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }))
+          }
+        },
+      })
+      const disposeLibraryRefresh = webServer.register({
+        kind: 'exact',
+        path: '/plugins/dsh-usage-monitor/plugin-library/refresh',
+        handler: async (_req: HttpRequest, res: HttpResponse) => {
+          if ((_req.method ?? 'GET') !== 'POST') {
+            res.writeHead(405, { allow: 'POST' })
+            res.end('method not allowed')
+            return
+          }
+          try {
+            const library = await refreshLibrary(dynamic().libraryRoot)
+            res.writeHead(200, {
+              'content-type': 'application/json; charset=utf-8',
+              'cache-control': 'no-store',
+            })
+            res.end(JSON.stringify(library))
+          } catch (error) {
+            res.writeHead(500, {
+              'content-type': 'application/json; charset=utf-8',
+              'cache-control': 'no-store',
+            })
+            res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }))
+          }
+        },
+      })
       return () => {
         disposeStatus()
         disposeRefresh()
+        disposeLibrary()
+        disposeLibraryRefresh()
       }
     }, 'dsh-usage-monitor: status routes')
   }

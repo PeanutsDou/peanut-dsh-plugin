@@ -125,6 +125,23 @@ function ensureStyles(): void {
 .dsh-usage-field input{height:34px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px}
 .dsh-usage-field input:disabled{opacity:.5}
 .dsh-usage-hint{margin:0;font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.dsh-usage-tabs{display:flex;gap:6px;margin:0 0 4px;border-bottom:1px solid var(--dsw-alias-border-l2);padding-bottom:8px}
+.dsh-usage-tab{appearance:none;border:1px solid transparent;border-radius:999px;padding:4px 12px;background:transparent;color:var(--dsw-alias-label-tertiary);font:12px/1.5 system-ui;cursor:pointer}
+.dsh-usage-tab:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2)}
+.dsh-usage-tab.active{background:var(--dsw-alias-brand-primary,#3b82f6);border-color:var(--dsw-alias-brand-primary,#3b82f6);color:#fff}
+.dsh-usage-library-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.dsh-usage-repo{margin:10px 0;padding:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}
+.dsh-usage-repo-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:13px;font-weight:600}
+.dsh-usage-repo-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-usage-repo-meta{font-size:11px;color:var(--dsw-alias-label-tertiary);margin:4px 0 8px}
+.dsh-usage-repo-table{display:flex;flex-direction:column;gap:6px}
+.dsh-usage-repo-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+.dsh-usage-repo-ver{color:var(--dsw-alias-label-tertiary);font-size:11px}
+.dsh-usage-badge{appearance:none;border-radius:999px;padding:1px 8px;font-size:11px;line-height:18px;white-space:nowrap}
+.dsh-usage-badge-synced,.dsh-usage-badge-deployed,.dsh-usage-badge-enabled{background:color-mix(in srgb,#22c55e 16%,transparent);color:#22c55e}
+.dsh-usage-badge-ahead,.dsh-usage-badge-installed-mismatch{background:color-mix(in srgb,#f59e0b 18%,transparent);color:#f59e0b}
+.dsh-usage-badge-behind,.dsh-usage-badge-diverged,.dsh-usage-badge-dirty,.dsh-usage-badge-source-only,.dsh-usage-badge-disabled{background:color-mix(in srgb,#ef4444 14%,transparent);color:#ef4444}
+.dsh-usage-badge-unknown,.dsh-usage-badge-not-deployed{background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 18%,transparent);color:var(--dsw-alias-label-tertiary)}
 @media(max-width:520px){.dsh-usage-grid{grid-template-columns:repeat(2,1fr)}}
 `
   document.head.append(style)
@@ -297,6 +314,142 @@ function LineChart({ title, rows, models }: { title: string; rows: ChartRow[]; m
   )
 }
 
+interface PluginLibraryPackageStatus {
+  dir: string
+  name: string
+  version: string
+  sourceExists: boolean
+  installed: boolean
+  installedVersion?: string
+  deployed: boolean
+  enabled: boolean
+  status: 'deployed' | 'installed-mismatch' | 'source-only' | 'not-deployed'
+  deployPath?: string
+}
+
+interface PluginLibraryRepoStatus {
+  id: string
+  name: string
+  displayName: string
+  localPath: string
+  type: string
+  branch: string
+  head: string
+  remoteHead?: string
+  ahead: number
+  behind: number
+  dirtyFiles: number
+  dirtyList: string[]
+  syncState: 'synced' | 'ahead' | 'behind' | 'diverged' | 'unknown'
+  error?: string
+  plugins: PluginLibraryPackageStatus[]
+}
+
+interface PluginLibraryStatus {
+  generatedAt: number
+  manifestPath: string
+  libraryRoot: string
+  repositories: PluginLibraryRepoStatus[]
+}
+
+function syncLabel(repo: PluginLibraryRepoStatus): string {
+  if (repo.syncState === 'synced') return '已同步'
+  if (repo.syncState === 'ahead') return `本地领先 ${repo.ahead}`
+  if (repo.syncState === 'behind') return `落后 GitHub ${repo.behind}`
+  if (repo.syncState === 'diverged') return `分叉 +${repo.ahead}/-${repo.behind}`
+  return '未知'
+}
+
+function packageStatusLabel(pkg: PluginLibraryPackageStatus): string {
+  if (pkg.status === 'deployed') return '已部署'
+  if (pkg.status === 'installed-mismatch') return '版本不一致'
+  if (pkg.status === 'source-only') return '仅源码'
+  return '未部署'
+}
+
+function PluginLibraryPanel(): JSX.Element {
+  const [data, setData] = useState<PluginLibraryStatus | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = async (sync = false): Promise<void> => {
+    if (sync) setRefreshing(true)
+    else setLoading(true)
+    setError(null)
+    try {
+      const response = await fetch(sync
+        ? '/plugins/dsh-usage-monitor/plugin-library/refresh'
+        : '/plugins/dsh-usage-monitor/plugin-library', {
+        method: sync ? 'POST' : 'GET',
+        cache: 'no-store',
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const json = await response.json() as PluginLibraryStatus
+      setData(json)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
+  }
+
+  useEffect(() => {
+    void load()
+    const timer = setInterval(() => { void load() }, 15000)
+    return () => { clearInterval(timer) }
+  }, [])
+
+  if (error !== null && data === null) {
+    return <div className="dsh-usage-err">插件库读取失败：{error}</div>
+  }
+  if (data === null) {
+    return <div className="dsh-usage-hint">{loading ? '正在扫描插件库…' : '暂无插件库数据'}</div>
+  }
+
+  return (
+    <div className="dsh-usage-section" style={{ marginTop: 4 }}>
+      <div className="dsh-usage-library-head">
+        <span className="dsh-usage-hint">{data.libraryRoot}</span>
+        <button type="button" className="dsh-usage-refresh" disabled={refreshing} onClick={() => { void load(true) }}>
+          {refreshing ? '同步中…' : '同步 GitHub'}
+        </button>
+      </div>
+      {error !== null ? <p className="dsh-usage-err">{error}</p> : null}
+      {data.repositories.length === 0 ? <span className="dsh-usage-hint">仓库清单为空</span> : null}
+      {data.repositories.map(repo => (
+        <div key={repo.id} className="dsh-usage-repo">
+          <div className="dsh-usage-repo-head">
+            <span className="dsh-usage-repo-name">{repo.displayName}</span>
+            <span className={`dsh-usage-badge dsh-usage-badge-${repo.syncState}`}>{syncLabel(repo)}</span>
+            {repo.dirtyFiles > 0 ? <span className="dsh-usage-badge dsh-usage-badge-dirty">{repo.dirtyFiles} 个未提交</span> : null}
+          </div>
+          <div className="dsh-usage-repo-meta">
+            {repo.branch} · {repo.head.slice(0, 7)}
+          </div>
+          {repo.error !== undefined ? <p className="dsh-usage-err">仓库错误：{repo.error}</p> : null}
+          {repo.plugins.length > 0 ? (
+            <div className="dsh-usage-repo-table">
+              {repo.plugins.map(pkg => (
+                <div key={pkg.name} className="dsh-usage-repo-row">
+                  <span className="dsh-usage-repo-name">{pkg.name}</span>
+                  <span className="dsh-usage-repo-ver">{pkg.version}{pkg.installedVersion !== undefined && pkg.installedVersion !== pkg.version ? ` → 已装 ${pkg.installedVersion}` : ''}</span>
+                  <span className={`dsh-usage-badge dsh-usage-badge-${pkg.status}`}>{packageStatusLabel(pkg)}</span>
+                  <span className={`dsh-usage-badge ${pkg.enabled ? 'dsh-usage-badge-enabled' : 'dsh-usage-badge-disabled'}`}>{pkg.enabled ? '已启用' : '未启用'}</span>
+                </div>
+              ))}
+            </div>
+          ) : <span className="dsh-usage-hint">仓库中没有可识别的插件包</span>}
+        </div>
+      ))}
+      <p className="dsh-usage-hint" style={{ marginTop: 10 }}>
+        数据来自 {data.manifestPath}
+      </p>
+    </div>
+  )
+}
+
 function DetailPanel({ status, loading, onClose, onRefresh, anchorLeft, openUp }: {
   status: StatusData | null
   loading: boolean
@@ -306,6 +459,7 @@ function DetailPanel({ status, loading, onClose, onRefresh, anchorLeft, openUp }
   openUp: boolean
 }) {
   const ref = useRef<HTMLDivElement | null>(null)
+  const [tab, setTab] = useState<'usage' | 'library'>('usage')
 
   useEffect(() => {
     const onPointer = (event: MouseEvent) => {
@@ -341,99 +495,114 @@ function DetailPanel({ status, loading, onClose, onRefresh, anchorLeft, openUp }
       <h2 className="dsh-usage-title">
         <span>API 用量与余额</span>
         <button type="button" className="dsh-usage-refresh" disabled={loading} onClick={onRefresh}>
-          {loading ? '刷新中…' : '刷新余额'}
+          {loading ? '刷新中…' : tab === 'library' ? '刷新插件库' : '刷新余额'}
         </button>
       </h2>
 
-      {balance?.ok === false ? <p className="dsh-usage-err">余额：{balance.error ?? '查询失败'}（{fmtTime(balance.fetchedAt)}）</p> : null}
-      {balance?.ok === true ? (
-        <div className="dsh-usage-grid">
-          <Stat label="余额" value={fmtMoney(balance.total, balance.currency)} />
-          <Stat label="充值" value={fmtMoney(balance.toppedUp, balance.currency)} />
-          <Stat label="赠送" value={fmtMoney(balance.granted, balance.currency)} />
-        </div>
-      ) : null}
+      <div className="dsh-usage-tabs">
+        <button type="button" className={`dsh-usage-tab${tab === 'usage' ? ' active' : ''}`} onClick={() => { setTab('usage') }}>
+          用量与余额
+        </button>
+        <button type="button" className={`dsh-usage-tab${tab === 'library' ? ' active' : ''}`} onClick={() => { setTab('library') }}>
+          个人插件库
+        </button>
+      </div>
 
-      <section className="dsh-usage-section">
-        <h3>花费（按官方价估算）</h3>
-        <div className="dsh-usage-grid">
-          <Stat label="今日" value={usage ? fmtCost(usage.todayCost) : '—'} />
-          <Stat label="本周" value={usage ? fmtCost(usage.weekCost) : '—'} />
-          <Stat label="本月" value={usage ? fmtCost(usage.monthCost) : '—'} />
-          <Stat label="累计" value={usage ? fmtCost(usage.allTimeCost) : '—'} />
-        </div>
-      </section>
+      {tab === 'usage' ? (
+        <>
+          {balance?.ok === false ? <p className="dsh-usage-err">余额：{balance.error ?? '查询失败'}（{fmtTime(balance.fetchedAt)}）</p> : null}
+          {balance?.ok === true ? (
+            <div className="dsh-usage-grid">
+              <Stat label="余额" value={fmtMoney(balance.total, balance.currency)} />
+              <Stat label="充值" value={fmtMoney(balance.toppedUp, balance.currency)} />
+              <Stat label="赠送" value={fmtMoney(balance.granted, balance.currency)} />
+            </div>
+          ) : null}
 
-      <section className="dsh-usage-section">
-        <h3>今日 Token</h3>
-        <div className="dsh-usage-grid">
-          <Stat label="输入(计费)" value={usage ? fmtTokens(billedInput(usage.today)) : '—'} />
-          <Stat label="输出" value={usage ? fmtTokens(usage.today.outputTokens) : '—'} />
-          <Stat label="缓存命中" value={usage ? fmtPercent(usage.todayCacheHitRate) : '—'} />
-        </div>
-      </section>
+          <section className="dsh-usage-section">
+            <h3>花费（按官方价估算）</h3>
+            <div className="dsh-usage-grid">
+              <Stat label="今日" value={usage ? fmtCost(usage.todayCost) : '—'} />
+              <Stat label="本周" value={usage ? fmtCost(usage.weekCost) : '—'} />
+              <Stat label="本月" value={usage ? fmtCost(usage.monthCost) : '—'} />
+              <Stat label="累计" value={usage ? fmtCost(usage.allTimeCost) : '—'} />
+            </div>
+          </section>
 
-      <section className="dsh-usage-section">
-        <h3>本月 / 累计 Token</h3>
-        <div className="dsh-usage-grid">
-          <Stat label="本月输入" value={usage ? fmtTokens(billedInput(usage.month)) : '—'} />
-          <Stat label="本月输出" value={usage ? fmtTokens(usage.month.outputTokens) : '—'} />
-          <Stat label="本月缓存" value={usage ? fmtPercent(usage.monthCacheHitRate) : '—'} />
-          <Stat label="累计输入" value={usage ? fmtTokens(billedInput(usage.allTime)) : '—'} />
-          <Stat label="累计输出" value={usage ? fmtTokens(usage.allTime.outputTokens) : '—'} />
-          <Stat label="累计缓存" value={usage ? fmtPercent(usage.allTimeCacheHitRate) : '—'} />
-        </div>
-      </section>
+          <section className="dsh-usage-section">
+            <h3>今日 Token</h3>
+            <div className="dsh-usage-grid">
+              <Stat label="输入(计费)" value={usage ? fmtTokens(billedInput(usage.today)) : '—'} />
+              <Stat label="输出" value={usage ? fmtTokens(usage.today.outputTokens) : '—'} />
+              <Stat label="缓存命中" value={usage ? fmtPercent(usage.todayCacheHitRate) : '—'} />
+            </div>
+          </section>
 
-      <section className="dsh-usage-section">
-        <h3>各模型累计花费</h3>
-        <div className="dsh-usage-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)' }}>
-          {usage && usage.models.length > 0
-            ? usage.models.map((model, index) => {
-              const buckets = usage.modelCosts[model]
-              return (
-                <div className="dsh-usage-cell" key={model}>
-                  <span className="dsh-usage-k" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span className="dsh-usage-swatch" style={{ background: PALETTE[index % PALETTE.length] }} />
-                    {model}
-                  </span>
-                  <span className="dsh-usage-v">{fmtCost(buckets?.costCny)}</span>
-                </div>
-              )
-            })
-            : <span className="dsh-usage-hint">暂无数据</span>}
-        </div>
-      </section>
+          <section className="dsh-usage-section">
+            <h3>本月 / 累计 Token</h3>
+            <div className="dsh-usage-grid">
+              <Stat label="本月输入" value={usage ? fmtTokens(billedInput(usage.month)) : '—'} />
+              <Stat label="本月输出" value={usage ? fmtTokens(usage.month.outputTokens) : '—'} />
+              <Stat label="本月缓存" value={usage ? fmtPercent(usage.monthCacheHitRate) : '—'} />
+              <Stat label="累计输入" value={usage ? fmtTokens(billedInput(usage.allTime)) : '—'} />
+              <Stat label="累计输出" value={usage ? fmtTokens(usage.allTime.outputTokens) : '—'} />
+              <Stat label="累计缓存" value={usage ? fmtPercent(usage.allTimeCacheHitRate) : '—'} />
+            </div>
+          </section>
 
-      {usage && usage.days.length > 0 ? (
-        <section className="dsh-usage-section">
-          <LineChart
-            title="最近 7 天"
-            models={usage.models}
-            rows={usage.days.map(day => ({
-              key: day.date,
-              costCny: day.buckets.costCny,
-              totalTokens: tokens(day.buckets),
-              byModel: day.byModel,
-            }))}
-          />
-        </section>
-      ) : null}
+          <section className="dsh-usage-section">
+            <h3>各模型累计花费</h3>
+            <div className="dsh-usage-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)' }}>
+              {usage && usage.models.length > 0
+                ? usage.models.map((model, index) => {
+                  const buckets = usage.modelCosts[model]
+                  return (
+                    <div className="dsh-usage-cell" key={model}>
+                      <span className="dsh-usage-k" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span className="dsh-usage-swatch" style={{ background: PALETTE[index % PALETTE.length] }} />
+                        {model}
+                      </span>
+                      <span className="dsh-usage-v">{fmtCost(buckets?.costCny)}</span>
+                    </div>
+                  )
+                })
+                : <span className="dsh-usage-hint">暂无数据</span>}
+            </div>
+          </section>
 
-      {usage && usage.months.length > 0 ? (
-        <section className="dsh-usage-section">
-          <LineChart
-            title="最近 12 个月"
-            models={usage.models}
-            rows={usage.months.map(month => ({
-              key: month.month,
-              costCny: month.buckets.costCny,
-              totalTokens: tokens(month.buckets),
-              byModel: month.byModel,
-            }))}
-          />
-        </section>
-      ) : null}
+          {usage && usage.days.length > 0 ? (
+            <section className="dsh-usage-section">
+              <LineChart
+                title="最近 7 天"
+                models={usage.models}
+                rows={usage.days.map(day => ({
+                  key: day.date,
+                  costCny: day.buckets.costCny,
+                  totalTokens: tokens(day.buckets),
+                  byModel: day.byModel,
+                }))}
+              />
+            </section>
+          ) : null}
+
+          {usage && usage.months.length > 0 ? (
+            <section className="dsh-usage-section">
+              <LineChart
+                title="最近 12 个月"
+                models={usage.models}
+                rows={usage.months.map(month => ({
+                  key: month.month,
+                  costCny: month.buckets.costCny,
+                  totalTokens: tokens(month.buckets),
+                  byModel: month.byModel,
+                }))}
+              />
+            </section>
+          ) : null}
+        </>
+      ) : (
+        <PluginLibraryPanel />
+      )}
     </div>
   )
 }
@@ -729,7 +898,6 @@ export function apply(ctx: ClientContext): void {
     scope.subscribe(() => { store.set(project()) })
     ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
       name: 'settings.plugin.item',
-      key: 'dsh-usage-monitor',
       id: 'dsh-usage-monitor',
       order: 50,
       inject: () => ({
