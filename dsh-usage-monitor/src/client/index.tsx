@@ -126,9 +126,9 @@ function ensureStyles(): void {
 .dsh-usage-field input:disabled{opacity:.5}
 .dsh-usage-hint{margin:0;font-size:12px;color:var(--dsw-alias-label-tertiary)}
 .dsh-usage-tabs{display:flex;gap:6px;margin:0 0 4px;border-bottom:1px solid var(--dsw-alias-border-l2);padding-bottom:8px}
-.dsh-usage-tab{appearance:none;border:1px solid transparent;border-radius:999px;padding:4px 12px;background:transparent;color:var(--dsw-alias-label-tertiary);font:12px/1.5 system-ui;cursor:pointer}
+.dsh-usage-tab{appearance:none;border:1px solid transparent;border-radius:999px;padding:4px 12px;background:transparent;color:var(--dsw-alias-label-secondary,#94a3b8);font:12px/1.5 system-ui;cursor:pointer}
 .dsh-usage-tab:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2)}
-.dsh-usage-tab.active{background:var(--dsw-alias-brand-primary,#3b82f6);border-color:var(--dsw-alias-brand-primary,#3b82f6);color:#fff}
+.dsh-usage-tab.active{background:#2563eb;border-color:#2563eb;color:#fff;font-weight:500}
 .dsh-usage-library-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
 .dsh-usage-repo{margin:10px 0;padding:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}
 .dsh-usage-repo-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:13px;font-weight:600}
