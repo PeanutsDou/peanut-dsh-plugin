@@ -344,7 +344,7 @@ export function NotificationSettingsSection({ useSettings, set, requestPermissio
           onChange={(checked) => { set({ requireInteraction: checked }) }}
         />
         <Toggle
-          defaultChecked={settings?.backgroundOnly ?? true}
+          defaultChecked={settings?.backgroundOnly ?? false}
           label={t('settings.advanced.backgroundOnly')}
           desc={t('settings.advanced.backgroundOnlyDesc')}
           onChange={(checked) => { set({ backgroundOnly: checked }) }}
