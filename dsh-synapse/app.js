@@ -29,6 +29,16 @@ const CARD_HEIGHT = 276
 const CARD_GAP_Y = 42
 const CAMERA_INSET_X = 56
 const CAMERA_INSET_Y = 56
+// Omniscient display: a session node is shown as a document node when any
+// projected tool record directly modified a file/document. The whitelist is
+// deliberately conservative (shell commands are not parsed).
+const FILE_MODIFY_TOOLS = new Set([
+  'write', 'write_file', 'writefile', 'edit', 'edit_file', 'editfile',
+  'str_replace_editor', 'apply_patch', 'file_write', 'file_edit',
+  'create_file', 'update_file', 'replace_file', 'rename_file',
+  'delete_file', 'remove_file', 'move_file', 'fs.write', 'fs.writefile',
+  'fs.writefile', 'fs.writesync',
+])
 const state = {
   summaries: [], workspace: null, activeId: null, mode: 'canvas', zoom: 1, currentDsh: null, sidebarCollapsed: false,
   dshWorkspaces: [], selectedDshWorkspaceId: null, dshWorkspacesSignature: '',
@@ -734,7 +744,13 @@ function initialCanvasCamera(cards) {
 function placeConversationCards(cards) {
   const saved = new Map(cards.flatMap(card => {
     if (card.positionLocked !== true) return []
-    const position = state.cardPositions.get(card.id) ?? state.cardPositions.get(card.positionKey)
+    const legacyFirstTurn = Number.isInteger(card.sourceSeq)
+      ? state.cardPositions.get(`${card.dshThreadId}:turn:${card.sourceSeq}`)
+      : state.cardPositions.get(`${card.dshThreadId}:turn:empty`)
+    const position = state.cardPositions.get(card.id)
+      ?? state.cardPositions.get(card.positionKey)
+      ?? state.cardPositions.get(`${card.dshThreadId}:turn-index:0`)
+      ?? legacyFirstTurn
     return position === undefined ? [] : [[card.id, { x: position.x, y: position.y }]]
   }))
   const occupied = []
@@ -796,86 +812,68 @@ function conversationCards(threads) {
   const threadsById = new Map(threads.map(thread => [thread.id, thread]))
   for (const thread of threads) {
     const messages = messagesFor(thread)
-    const turns = []
+    // Find the first complete user turn; that round is the node's summary
+    // content ("以聚合后的第一轮会话为准").
+    let question = null
+    let answer = null
     for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
-      const question = messages[messageIndex]
-      if (question.kind !== 'user') continue
+      const candidate = messages[messageIndex]
+      if (candidate.kind !== 'user') continue
+      question = candidate
       const replies = []
       for (let replyIndex = messageIndex + 1; replyIndex < messages.length; replyIndex++) {
         const reply = messages[replyIndex]
         if (reply.kind === 'user') break
         if (reply.kind === 'assistant') replies.push(reply)
       }
-      const answer = replies.at(-1) ?? null
-      const turnIndex = turns.length
-      const id = `${thread.id}:turn:${question.sourceSeq ?? messageIndex}`
-      const previous = turns.at(-1)
-      const positionKey = `${thread.id}:turn-index:${turnIndex}`
-      const naturalPosition = previous === undefined ? { x: 86, y: 82 } : { x: previous.naturalPosition.x + 365, y: previous.naturalPosition.y }
-      const savedPosition = state.cardPositions?.get(id) ?? state.cardPositions?.get(positionKey)
-      const positionLocked = savedPosition !== undefined
-      const position = positionLocked ? savedPosition : naturalPosition
-      turns.push({
-        id,
-        positionKey,
-        dshThreadId: thread.id,
-        sourceParentId: thread.parentId,
-        parentId: null,
-        sourceSeq: question.sourceSeq,
-        turnIndex,
-        naturalPosition,
-        position,
-        positionLocked,
-        question: question.text,
-        answer,
-      })
+      answer = replies.at(-1) ?? null
+      break
     }
-    const liveReply = state.liveReplies.get(thread.dshSessionId)
-    const latestTurn = turns.at(-1)
-    if (liveReply?.running && latestTurn !== undefined && (latestTurn.answer === null || latestTurn.answer.pending === true)) latestTurn.answer = { kind: 'assistant', text: liveReply.text, pending: true, at: new Date().toISOString() }
-    if (turns.length === 0) {
-      const id = `${thread.id}:turn:empty`
-      const positionKey = `${thread.id}:turn-index:0`
-      const naturalPosition = { x: 86, y: 82 }
-      const savedPosition = state.cardPositions?.get(id) ?? state.cardPositions?.get(positionKey)
-      const positionLocked = savedPosition !== undefined
-      turns.push({
+    const totalTurns = messages.filter(message => message.kind === 'user').length
+    const hasFileChange = messages.some(message =>
+      Array.isArray(message.process) && message.process.some(entry =>
+        FILE_MODIFY_TOOLS.has(String(entry?.name ?? '').trim().toLowerCase())))
+    const kind = hasFileChange ? 'document' : 'session'
+    const id = `${thread.id}:session`
+    const positionKey = `${thread.id}:session`
+    const naturalPosition = { x: 86, y: 82 }
+    const legacyTurnId = Number.isInteger(question?.sourceSeq)
+      ? `${thread.id}:turn:${question.sourceSeq}`
+      : `${thread.id}:turn:empty`
+    const savedPosition = state.cardPositions?.get(id)
+      ?? state.cardPositions?.get(positionKey)
+      ?? state.cardPositions?.get(`${thread.id}:turn-index:0`)
+      ?? state.cardPositions?.get(legacyTurnId)
+    const positionLocked = savedPosition !== undefined
+    const card = {
       id,
       positionKey,
       dshThreadId: thread.id,
       sourceParentId: thread.parentId,
       parentId: null,
-      sourceSeq: undefined,
+      sourceSeq: question?.sourceSeq,
       turnIndex: 0,
+      totalTurns,
+      kind,
       naturalPosition,
       position: positionLocked ? savedPosition : naturalPosition,
       positionLocked,
-      question: thread.dshSessionTitle ?? thread.title,
-      answer: null,
-      })
+      question: question?.text ?? thread.dshSessionTitle ?? thread.title,
+      answer,
+      canContinue: true,
     }
-    turns.at(-1).canContinue = true
-    cardsByThread.set(thread.id, turns)
-    cards.push(...turns)
+    const liveReply = state.liveReplies.get(thread.dshSessionId)
+    if (liveReply?.running && (card.answer === null || card.answer.pending === true)) {
+      card.answer = { kind: 'assistant', text: liveReply.text, pending: true, at: new Date().toISOString() }
+    }
+    cards.push(card)
+    cardsByThread.set(thread.id, [card])
   }
   for (const card of cards) {
-    const siblings = cardsByThread.get(card.dshThreadId)
-    if (card.turnIndex > 0) card.parentId = siblings[card.turnIndex - 1].id
-    else {
-      const parentCards = cardsByThread.get(card.sourceParentId)
-      // Lookup by map instead of a linear `threads.find` per first-turn card:
-      // with N subagent threads this loop ran O(cards × threads) per render.
-      const sourceThread = threadsById.get(card.dshThreadId)
-      const firstChildQuestion = siblings?.[0]
-      const seedLength = sourceThread?.sourceSeedLength ?? firstChildQuestion?.sourceSeq
-      // A fork inherits every parent event before DSH's durable seed boundary.
-      // The latest parent question below that boundary is the exact Turn where
-      // this child was born. Canvas coordinates never participate in lineage.
-      const inheritedTurn = Number.isSafeInteger(seedLength)
-        ? parentCards?.filter(candidate => Number.isInteger(candidate.sourceSeq) && candidate.sourceSeq < seedLength).at(-1)
-        : undefined
-      card.parentId = state.branchAnchors.get(card.dshThreadId) ?? inheritedTurn?.id ?? null
-    }
+    const parentThread = card.sourceParentId === null ? undefined : threadsById.get(card.sourceParentId)
+    if (parentThread === undefined) continue
+    const parentCard = cardsByThread.get(parentThread.id)?.at(-1)
+    if (parentCard !== undefined) card.parentId = parentCard.id
   }
   return layoutConversationGraph(cards, threads)
 }
@@ -983,20 +981,24 @@ function canvasConnectors(cards) {
 
 function conversationCard(card, graph) {
   const active = card.dshThreadId === state.activeId ? 'active' : ''
-  const source = card.parentId === null ? 'DSH 会话' : card.turnIndex === 0 ? 'DSH 分支' : '追问'
+  const source = card.parentId === null ? '会话' : '分支'
+  const kindLabel = card.kind === 'document' ? '文档' : '会话'
+  const sourceLabel = card.parentId === null ? kindLabel : `${source} · ${kindLabel}`
   const continueButton = card.canContinue === true
     ? `<button class="graph-continue-button" data-action="open-continue" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" aria-label="添加追问" title="添加追问"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg></button>`
     : ''
   const childCount = graph.childCounts.get(card.id) ?? 0
   const collapsed = state.collapsedCardIds.has(card.id)
   const foldLabel = collapsed ? '展开后续对话' : '折叠后续对话'
-  const foldButton = childCount === 0 || card.canContinue === true ? '' : `<button class="graph-fold-button${collapsed ? ' collapsed' : ''}" data-action="toggle-card-children" data-card="${escapeHtml(card.id)}" aria-expanded="${collapsed ? 'false' : 'true'}" aria-label="${foldLabel}" title="${foldLabel}"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3.5 8h9"/>${collapsed ? '<path d="M8 3.5v9"/>' : ''}</svg></button>`
-  const branchButton = childCount === 0 || card.canContinue === true || !Number.isInteger(card.answer?.sourceSeq) ? '' : `<button class="graph-branch-button" data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" data-seq="${card.answer.sourceSeq}" aria-label="在新对话中分支" title="在新对话中分支"><svg aria-hidden="true" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M13.0762 1.37207C14.0846 1.37228 14.9021 2.19077 14.9023 3.19922C14.9022 4.20772 14.0847 5.02518 13.0762 5.02539C12.2967 5.02539 11.6325 4.53691 11.3701 3.84961H4.35547C4.79397 4.26458 5.15861 4.7644 5.41699 5.33496L7.10645 9.06738C7.88526 10.7875 9.55104 11.9228 11.4189 12.0371C11.7085 11.4109 12.3411 10.9756 13.0762 10.9756C14.0843 10.9759 14.9023 11.7936 14.9023 12.8018C14.9023 13.81 14.0843 14.6277 13.0762 14.6279C12.2534 14.6279 11.5574 14.0832 11.3291 13.335C8.9868 13.1879 6.89981 11.7612 5.92285 9.60352L4.23242 5.87109C3.67503 4.64033 2.44878 3.84961 1.09766 3.84961V2.54883C1.10665 2.54883 1.11601 2.54975 1.125 2.5498L11.3701 2.54883C11.6326 1.86151 12.2969 1.37207 13.0762 1.37207ZM13.0762 12.2764C12.7858 12.2764 12.5508 12.5114 12.5508 12.8018C12.5508 13.0921 12.7858 13.3281 13.0762 13.3281C13.3664 13.3279 13.6025 13.092 13.6025 12.8018C13.6025 12.5115 13.3664 12.2766 13.0762 12.2764ZM13.0762 2.67285C12.7855 2.67285 12.55 2.90861 12.5498 3.19922C12.5499 3.48987 12.7855 3.72559 13.0762 3.72559C13.3667 3.72538 13.6024 3.48975 13.6025 3.19922C13.6023 2.90874 13.3666 2.67306 13.0762 2.67285Z" fill="currentColor"/></svg></button>`
-  return `<article class="thread-card ${active}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6">
+  const foldButton = childCount === 0 ? '' : `<button class="graph-fold-button${collapsed ? ' collapsed' : ''}" data-action="toggle-card-children" data-card="${escapeHtml(card.id)}" aria-expanded="${collapsed ? 'false' : 'true'}" aria-label="${foldLabel}" title="${foldLabel}"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3.5 8h9"/>${collapsed ? '<path d="M8 3.5v9"/>' : ''}</svg></button>`
+  const branchButton = Number.isInteger(card.answer?.sourceSeq) ? `<button class="graph-branch-button" data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" data-seq="${card.answer.sourceSeq}" aria-label="在新对话中分支" title="在新对话中分支"><svg aria-hidden="true" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M13.0762 1.37207C14.0846 1.37228 14.9021 2.19077 14.9023 3.19922C14.9022 4.20772 14.0847 5.02518 13.0762 5.02539C12.2967 5.02539 11.6325 4.53691 11.3701 3.84961H4.35547C4.79397 4.26458 5.15861 4.7644 5.41699 5.33496L7.10645 9.06738C7.88526 10.7875 9.55104 11.9228 11.4189 12.0371C11.7085 11.4109 12.3411 10.9756 13.0762 10.9756C14.0843 10.9759 14.9023 11.7936 14.9023 12.8018C14.9023 13.81 14.0843 14.6277 13.0762 14.6279C12.2534 14.6279 11.5574 14.0832 11.3291 13.335C8.9868 13.1879 6.89981 11.7612 5.92285 9.60352L4.23242 5.87109C3.67503 4.64033 2.44878 3.84961 1.09766 3.84961V2.54883C1.10665 2.54883 1.11601 2.54975 1.125 2.5498L11.3701 2.54883C11.6326 1.86151 12.2969 1.37207 13.0762 1.37207ZM13.0762 12.2764C12.7858 12.2764 12.5508 12.5114 12.5508 12.8018C12.5508 13.0921 12.7858 13.3281 13.0762 13.3281C13.3664 13.3279 13.6025 13.092 13.6025 12.8018C13.6025 12.5115 13.3664 12.2766 13.0762 12.2764ZM13.0762 2.67285C12.7855 2.67285 12.55 2.90861 12.5498 3.19922C12.5499 3.48987 12.7855 3.72559 13.0762 3.72559C13.3667 3.72538 13.6024 3.48975 13.6025 3.19922C13.6023 2.90874 13.3666 2.67306 13.0762 2.67285Z" fill="currentColor"/></svg></button>` : ''
+  const kindClass = card.kind === 'document' ? ' card-document' : ''
+  const roundText = card.totalTurns > 0 ? `共 ${card.totalTurns} 轮` : '未开始'
+  return `<article class="thread-card ${active}${kindClass}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6">
     <button class="node-handle" data-drag-card="${card.id}" aria-label="拖动 ${escapeHtml(card.question)}" title="拖动卡片"></button>
     ${continueButton}${foldButton}${branchButton}
     <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button></div>
-    <div class="thread-meta"><span>${source}</span><span>第 ${card.turnIndex + 1} 轮</span></div>
+    <div class="thread-meta"><span>${sourceLabel}</span><span>${roundText}</span></div>
     <div class="thread-answer">${card.answer === null ? '<p class="thread-answer-empty">等待助手回复</p>' : card.answer.pending && card.answer.text === '' ? '<p class="thread-answer-pending">正在回复</p>' : `${renderMarkdown(card.answer.text)}${card.answer.pending ? '<p class="thread-answer-pending">正在回复</p>' : ''}`}</div>
     <footer><button data-action="show-thread" data-thread="${card.dshThreadId}">详情</button><button data-action="open-dsh" data-thread="${card.dshThreadId}">打开 DSH</button><button data-action="archive-thread" data-thread="${card.dshThreadId}">归档</button></footer>
   </article>`
