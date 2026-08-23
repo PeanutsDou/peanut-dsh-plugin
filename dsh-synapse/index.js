@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 
 export const name = 'synapse'
-export const inject = ['webServer', 'sessions']
+export const inject = ['webServer', 'sessions', 'workspaceRegistry']
 
 const MAX_BODY_BYTES = 32 * 1024
 const MAX_TITLE_LENGTH = 120
@@ -928,7 +928,15 @@ export function apply(ctx, config) {
   const reportProjectionFailure = error => {
     ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
   }
+  // DSH keeps archived sessions in the session store/API, but the normal
+  // session list UI hides them. Synapse must follow the same boundary: only
+  // sessions currently visible in the session list belong on the canvas.
+  const archivedSessionIds = () => {
+    const ids = ctx.workspaceRegistry?.archivedSessionIds
+    return new Set(Array.isArray(ids) ? ids : [])
+  }
   const replaySession = session => {
+    if (archivedSessionIds().has(session.id)) return
     // Forks inherit their parent's log. The canvas already represents that
     // history through the parent node, so only project the child's live tail.
     // Everything else resumes from the persisted watermark inside
@@ -941,6 +949,7 @@ export function apply(ctx, config) {
   const projectionQueue = []
   let projectionScheduled = false
   const enqueueProjection = (session, event) => {
+    if (archivedSessionIds().has(session.id)) return
     projectionQueue.push({ session, event })
     if (projectionScheduled) return
     projectionScheduled = true
@@ -962,6 +971,12 @@ export function apply(ctx, config) {
     ctx.on('session/created', replaySession)
     ctx.on('session/event', enqueueProjection)
     for (const session of ctx.sessions.list()) replaySession(session)
+  }
+  // Drop any canvas nodes that were projected before this filter existed; DSH
+  // archive is persistent UI state and must not resurrect old threads.
+  const initialArchived = [...archivedSessionIds()]
+  if (initialArchived.length > 0) {
+    void store.syncSessions([], initialArchived).catch(reportProjectionFailure)
   }
   // The DSH /api browser-trust fence does not cover /synapse routes, so this
   // handler checks the Host header itself: localhost is allowed by default and
@@ -987,7 +1002,12 @@ export function apply(ctx, config) {
       }
       const branch = /^\/synapse\/api\/threads\/([0-9a-f-]+)\/branch$/i.exec(path)
       if (branch !== null && req.method === 'POST') return sendJson(res, 201, { thread: await store.branch(branch[1], await readJson(req)) })
-      if (path === '/synapse/api/sessions/sync' && req.method === 'POST') { const body = await readJson(req); return sendJson(res, 200, { workspaces: await store.syncSessions(body.sessions, body.removedSessionIds) }) }
+      if (path === '/synapse/api/sessions/sync' && req.method === 'POST') {
+        const body = await readJson(req)
+        const removed = new Set(Array.isArray(body.removedSessionIds) ? body.removedSessionIds : [])
+        for (const id of archivedSessionIds()) removed.add(id)
+        return sendJson(res, 200, { workspaces: await store.syncSessions(body.sessions, [...removed]) })
+      }
       if (path === '/synapse/api/view-state' && req.method === 'POST') {
         // M4 activation signal from the web client: fast saves while a canvas
         // view is open, relaxed debounce while every view stays closed.

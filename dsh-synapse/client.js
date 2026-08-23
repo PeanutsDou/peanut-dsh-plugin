@@ -9,9 +9,16 @@ window.__ModuleLoader__.load({
       const session = snapshot.byId[id]
       return session === undefined ? null : { id, title: session.displayTitle, cwd: session.cwd ?? null }
     }
+    const archivedSessionIds = ctx => {
+      const snapshot = ctx.workspaces.list.getSnapshot()
+      const ids = Array.isArray(snapshot?.archivedSessionIds) ? snapshot.archivedSessionIds : []
+      return new Set(ids)
+    }
     const sessionSnapshot = ctx => {
       const snapshot = ctx.sessions.list.getSnapshot()
+      const archived = archivedSessionIds(ctx)
       return snapshot.ids.map(id => {
+        if (archived.has(id)) return null
         const session = snapshot.byId[id]
         return session === undefined ? null : { id, title: session.displayTitle, cwd: session.cwd ?? null, parentId: session.parentId ?? null, blank: session.blank }
       }).filter(Boolean)
@@ -19,10 +26,11 @@ window.__ModuleLoader__.load({
     const workspaceSnapshot = ctx => {
       const sessions = ctx.sessions.list.getSnapshot()
       const snapshot = ctx.workspaces.list.getSnapshot()
-      const accounted = new Set(snapshot.items.flatMap(workspace => workspace.sessionIds))
+      const archived = archivedSessionIds(ctx)
+      const accounted = new Set(snapshot.items.flatMap(workspace => (workspace.sessionIds ?? []).filter(id => !archived.has(id))))
       return [
-        ...snapshot.items.map(workspace => ({ id: workspace.workspaceId, title: workspace.title, path: workspace.path, sessionIds: workspace.sessionIds })),
-        { id: 'dsh-ungrouped', title: '未分组', path: null, sessionIds: sessions.ids.filter(id => !accounted.has(id)) },
+        ...snapshot.items.map(workspace => ({ id: workspace.workspaceId, title: workspace.title, path: workspace.path, sessionIds: (workspace.sessionIds ?? []).filter(id => !archived.has(id)) })),
+        { id: 'dsh-ungrouped', title: '未分组', path: null, sessionIds: sessions.ids.filter(id => !archived.has(id) && !accounted.has(id)) },
       ]
     }
 
@@ -103,8 +111,9 @@ window.__ModuleLoader__.load({
       const liveUnsubscribers = new Map()
       const syncLiveSessions = () => {
         const snapshot = ctx.sessions.list.getSnapshot()
+        const archived = archivedSessionIds(ctx)
         for (const id of snapshot.ids) {
-          if (liveUnsubscribers.has(id)) continue
+          if (archived.has(id) || liveUnsubscribers.has(id)) continue
           const scope = ctx.sessions.scope(id)
           const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
           if (session === undefined) continue
@@ -118,7 +127,7 @@ window.__ModuleLoader__.load({
           }
           liveUnsubscribers.set(id, session.subscribe(publish))
         }
-        for (const [id, unsubscribe] of liveUnsubscribers) if (!snapshot.ids.includes(id)) { unsubscribe(); liveUnsubscribers.delete(id); liveSessions.delete(id); liveDirty.delete(id) }
+        for (const [id, unsubscribe] of liveUnsubscribers) if (!snapshot.ids.includes(id) || archived.has(id)) { unsubscribe(); liveUnsubscribers.delete(id); liveSessions.delete(id); liveDirty.delete(id) }
       }
       const flushLive = () => {
         liveFlushTimer = 0
@@ -161,7 +170,9 @@ window.__ModuleLoader__.load({
         lastSyncPostAt = Date.now()
         const sessions = sessionSnapshot(ctx)
         const sessionIds = new Set(sessions.map(session => session.id))
-        const removedSessionIds = [...knownSessionIds].filter(id => !sessionIds.has(id))
+        const removed = new Set([...knownSessionIds].filter(id => !sessionIds.has(id)))
+        for (const id of archivedSessionIds(ctx)) removed.add(id)
+        const removedSessionIds = [...removed]
         knownSessionIds = sessionIds
         void fetch('/synapse/api/sessions/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessions, removedSessionIds }) }).catch(() => {})
       }

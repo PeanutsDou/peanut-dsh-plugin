@@ -294,7 +294,7 @@ test('app.js 页面不可见暂停渲染与轮询，visibilitychange 恢复补�
 // ---------------------------------------------------------------------------
 // client.js：订阅扇入节流。物化 __ModuleLoader__ 工厂 + mock 宿主 ctx。
 // ---------------------------------------------------------------------------
-async function loadClient(sessionCount) {
+async function loadClient(sessionCount, { archived = [] } = {}) {
   const source = await readFile(new URL('../client.js', import.meta.url), 'utf8')
   const { clock, setTimeoutImpl, clearTimeoutImpl, advance } = makeClock()
   const posted = []
@@ -326,7 +326,7 @@ async function loadClient(sessionCount) {
       sessionOf: () => sessions[0].session,
       open: () => {}, fork: async () => 'forked', create: async () => 'created',
     },
-    workspaces: { list: { getSnapshot: () => ({ items: [] }), subscribe: () => () => {} } },
+    workspaces: { list: { getSnapshot: () => ({ items: [], archivedSessionIds: archived }), subscribe: () => () => {} } },
     effect: () => {},
     logger: { warn() {}, error() {} },
   }
@@ -437,6 +437,18 @@ test('client.js bridge 快照与 sessions/sync POST 有 leading+trailing 上界'
   assert.ok(bridgeTotal <= 4, `100 次列表变化后 bridge 消息应有界（实际 ${bridgeTotal}）`)
   const syncTotal = client.fetchCalls.filter(call => call.url.endsWith('/sessions/sync')).length
   assert.ok(syncTotal <= 3, `100 次列表变化后 sync POST 应有界（实际 ${syncTotal}）`)
+})
+
+test('client.js 归档会话不进入 sessions/sync，并作为 removedSessionIds 清理', async () => {
+  const client = await loadClient(3, { archived: ['sess-1'] })
+  client.overlayStub.hidden = false
+  client.triggerListChange()
+  await Promise.resolve()
+  const syncPosts = client.fetchCalls.filter(call => call.url.endsWith('/sessions/sync'))
+  assert.ok(syncPosts.length >= 1, '列表变化后应有一次 sessions/sync')
+  const body = JSON.parse(syncPosts[0].body)
+  assert.deepEqual(body.sessions.map(session => session.id), ['sess-0', 'sess-2'], '归档会话不得出现在 sessions 载荷中')
+  assert.ok(body.removedSessionIds.includes('sess-1'), '归档会话必须作为 removedSessionIds 下发，宿主据此清理画布节点')
 })
 
 test('client.js 页面不可见暂停流式转发，恢复可见时补发', async () => {
