@@ -82,6 +82,8 @@ function showWindowsNotification(title: string, message: string): void {
 export function apply(ctx: Context): void {
   let hidden = false
   const sessionMeta = new Map<string, SessionMeta>()
+  const prevAgentStatus = new Map<string, string>()
+  const lastNotifyAt = new Map<string, number>()
 
   ctx.on('session/event', (rawSession: unknown, rawEvent: unknown) => {
     const session = (rawSession ?? {}) as { id?: unknown }
@@ -115,7 +117,22 @@ export function apply(ctx: Context): void {
     }
   })
 
+  ctx.on('agent/status', ({ agent, status }) => {
+    const agentId = typeof agent?.id === 'string' ? agent.id : undefined
+    if (agentId === undefined) return
+    const prev = prevAgentStatus.get(agentId)
+    prevAgentStatus.set(agentId, status)
+    if (prev === 'running' && status === 'idle') {
+      console.log('[dsh-completion-toast] agent status idle hidden', agentId)
+      notifySession(agentId)
+    }
+  })
+
   function notifySession(sessionId: string): void {
+    const now = Date.now()
+    const last = lastNotifyAt.get(sessionId) ?? 0
+    if (now - last < 5000) return
+    lastNotifyAt.set(sessionId, now)
     const meta = sessionMeta.get(sessionId) ?? {}
     const title = meta.title ?? '未命名会话'
     const summary = meta.lastPrompt !== undefined ? `：${truncate(meta.lastPrompt, 80)}` : ''

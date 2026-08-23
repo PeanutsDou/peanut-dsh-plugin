@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Continue'
-$result = 'D:\douzhongjun\dsh-restart\tests\launcher-autostart-result.json'
+$result = 'D:\douzhongjun\dsh-dev\dsh-restart\tests\launcher-autostart-result.json'
 $startupVbs = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\dsh-autostart.vbs"
 $autostartLog = "$env:LOCALAPPDATA\DshWeb\autostart.log"
 $debugLog = "$env:LOCALAPPDATA\DshWeb\debug.log"

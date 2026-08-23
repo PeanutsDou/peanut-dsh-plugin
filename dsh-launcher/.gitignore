@@ -1,6 +1,0 @@
-bin/
-obj/
-dist/
-*.pdb
-*.user
-.vs/

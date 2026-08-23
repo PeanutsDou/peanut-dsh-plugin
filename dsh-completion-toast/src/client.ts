@@ -13,7 +13,8 @@ export const inject: string[] = ['sessions']
 
 /** 0.1.1 的 session list 条目结构（本地断言；类型包尚未同步到 rc.2）。 */
 interface SessionListEntry {
-  sessionId: string
+  sessionId?: string
+  id?: string
   running: boolean
   title?: string
 }
@@ -28,14 +29,26 @@ export function apply(ctx: ClientContext): void {
 
   const prevRunning = new Map<string, boolean>()
 
+  const reportVisibility = () => {
+    const outOfView = document.hidden || document.visibilityState === 'hidden' || !document.hasFocus()
+    fetch(`/plugins/dsh-completion-toast/visibility?hidden=${outOfView ? 1 : 0}`, { method: 'POST', cache: 'no-store' }).catch(() => {})
+  }
+
   const check = () => {
     const snapshot = sessions.list.getSnapshot()
-    const hidden = document.hidden || document.visibilityState === 'hidden'
+    const hidden = document.hidden || document.visibilityState === 'hidden' || !document.hasFocus()
     // 0.1.1: sessions list snapshot 改为 items 数组（byId 已移除），
     // 每个条目带 sessionId/running/title 等字段。
-    const entries = (snapshot as { items?: SessionListEntry[] }).items ?? []
+    const list = snapshot as { items?: SessionListEntry[]; ids?: string[]; byId?: Record<string, SessionListEntry> }
+    const entries: SessionListEntry[] = Array.isArray(list.items)
+      ? list.items
+      : (list.ids ?? []).map((id) => {
+          const summary = list.byId?.[id]
+          return summary ? { ...summary, sessionId: summary.sessionId ?? id } : { id, sessionId: id, running: false }
+        })
     for (const summary of entries) {
-      const id = summary.sessionId
+      const id = summary.sessionId ?? summary.id
+      if (!id) continue
       const wasRunning = prevRunning.get(id) ?? false
       const isRunning = summary.running
       if (wasRunning && !isRunning && hidden) {
@@ -51,7 +64,19 @@ export function apply(ctx: ClientContext): void {
 
   ctx.effect(() => {
     const unsubscribe = sessions.list.subscribe(check)
+    const onBlur = () => reportVisibility()
+    const onFocus = () => reportVisibility()
+    const onVisibility = () => reportVisibility()
+    window.addEventListener('blur', onBlur)
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibility)
     check()
-    return unsubscribe
-  }, 'dsh-completion-toast: completion edge reporter')
+    reportVisibility()
+    return () => {
+      unsubscribe()
+      window.removeEventListener('blur', onBlur)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, 'dsh-completion-toast: completion edge + visibility reporter')
 }
