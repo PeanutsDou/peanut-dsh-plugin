@@ -1452,18 +1452,6 @@
    "added": "2026-08-13"
   },
   {
-   "name": "dsh-notification",
-   "owner": "omdsh-dev",
-   "url": "https://github.com/omdsh-dev/dsh-notification",
-   "category": "notify",
-   "description": {
-    "en": "Desktop notifications for turn completions, with per-outcome controls and keyword rules.",
-    "zh": "回合完成桌面通知，按结果分控 + 关键词过滤。"
-   },
-   "install": "dsh plugin --profile web add github:omdsh-dev/dsh-notification",
-   "added": "2026-08-13"
-  },
-  {
    "name": "dsh-acp-for-bitfun",
    "owner": "bobleer",
    "url": "https://github.com/bobleer/dsh-acp-for-bitfun",

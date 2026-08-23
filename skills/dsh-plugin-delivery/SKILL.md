@@ -7,7 +7,7 @@ whenToUse: >-
 
 # DSH 插件安装/交付流程
 
-本 skill 固化自一条完整实操链路：重新安装 `dsh-notification`、清理未安装插件、修复 selection-tutor / usage-monitor 前端后发布正式版。
+本 skill 固化自一条完整实操链路：重新安装插件、清理未安装插件、修复 selection-tutor / usage-monitor 前端后发布正式版。
 核心目标：**任何插件变更都先落在本地插件库和分支，再经过 staging 影子环境验证，最后才交付到 prod。**
 
 ---
