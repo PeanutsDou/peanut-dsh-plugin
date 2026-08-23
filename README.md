@@ -14,6 +14,7 @@ DeepSeek Harness（DSH）个人插件合集——集中管理我自己维护的 
 | [dsh-reasoning-effort](dsh-reasoning-effort) | Codex 风格模型 + 推理强度滑块（fork 自 [HanaAyane/dsh-reasoning-effort](https://github.com/HanaAyane/dsh-reasoning-effort)，v0.5.0 → 本库 0.6.0） | ✅ 可用 |
 | [dsh-find-plugin](dsh-find-plugin) | 会话内实时搜索 DSH 插件工具快照备份（上游 [awesome-dsh-plugin/dsh-find-plugin](https://github.com/awesome-dsh-plugin/dsh-find-plugin)，v0.3.6 / `e75dc2e`，已审计） | ✅ 备份 |
 | [dsh-better-sidebar](dsh-better-sidebar) | DSH Web 侧边栏完整工作台：文件管理/编辑/终端/Git/内嵌浏览器/后台任务 + 第三方 Tab 注册（上游 [omdsh-dev/DSH-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar)，v0.12.3，npm 快照备份） | ✅ 备份 |
+| [dsh-synapse](dsh-synapse) | DSH 可视化会话地图：拖拽/缩放/分支/详情投影，复用现有 webServer，增量重放 + 有界存储（上游 [liangmianya/dsh-synapse](https://github.com/liangmianya/dsh-synapse)，v0.3.0 / `a323f76`，DSH Desktop 内置版 + 本地性能补丁） | ✅ 可用 |
 
 ## 目录约定
 
