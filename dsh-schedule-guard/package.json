@@ -1,0 +1,33 @@
+{
+  "name": "@peanutsdou/dsh-schedule-guard",
+  "version": "0.1.0",
+  "description": "宿主级定时任务守护插件：扫描所有持久化会话的 schedule 记录，到点自动唤醒冷会话执行，不依赖任务窗口是否打开。",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  }
+}

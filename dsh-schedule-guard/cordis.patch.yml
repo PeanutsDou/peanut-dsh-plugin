@@ -1,0 +1,5 @@
+# dsh-schedule-guard bundle patch — 宿主级定时任务守护
+- insert:
+    - id: dsh-schedule-guard
+      name: '@peanutsdou/dsh-schedule-guard'
+      config: {}

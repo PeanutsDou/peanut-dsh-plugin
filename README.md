@@ -9,6 +9,10 @@ DeepSeek Harness（DSH）个人插件合集——集中管理我自己维护的 
 | [dsh-launcher](dsh-launcher) | DSH 桌面独立窗口启动器（WebView2 壳）：开机自启（托盘壳自动拉起服务）、单实例、真 DPI 高清、自定义图标 | ✅ 可用 |
 | [llm-codemaker-hub](llm-codemaker-hub) | CodeMaker Hub provider 路由：经本地 hub 代理（127.0.0.1:15721）接公司 AI 网关，多模态模型支持 | ✅ 可用 |
 | [dsh-schedule-ui](dsh-schedule-ui) | 定时任务管理：会话级持久化任务 + 日历循环规则（daily/weekly/monthly/yearly）+ 浏览器第三页签 UI + `schedule_task` 模型工具 | ✅ 可用 |
+| [dsh-schedule-guard](dsh-schedule-guard) | 宿主级定时任务守护：扫描所有持久化会话的 schedule 记录，到点自动唤醒冷会话执行 | ✅ 可用 |
+| [dsh-session-categories](dsh-session-categories) | 会话分类视图：按目录/状态/标签组织会话列表（fork 修复 scope 错误） | ✅ 可用 |
+| [dsh-git-graph](dsh-git-graph) | Git 图谱会话视图：在会话中查看仓库提交图（上游 WhitePlusMS/dsh-git-graph，v0.0.2） | ✅ 可用 |
+| [dsh-annotation](dsh-annotation) | 会话文本选择批注：选中助手回复添加批注后发送，模型按编号逐条回应（上游 omdsh-dev/dsh-annotation，v1.4.0） | ✅ 可用 |
 | [dsh-file-launcher](dsh-file-launcher) | 双击 Ctrl 全盘文件名搜索：Everything 引擎（es.exe）+ 自包含搜索框 UI + 收藏/常用打分 | ✅ 可用 |
 | [dsh-restart](dsh-restart) | DSH 自重启：`restart_harness` / `restart_with_tasks`（停机离线任务），端口释放检测、重试与诊断日志 | ✅ 可用 |
 | [dsh-usage-monitor](dsh-usage-monitor) | API 余额 + token 日/月用量监控：底部状态栏、悬浮详情窗、缓存命中统计 | ✅ 可用 |
