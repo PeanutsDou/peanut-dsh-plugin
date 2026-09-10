@@ -7,7 +7,7 @@ DSH API 余额与 token 用量监控插件：前端底部状态栏 + 点击展�
 - **底部状态栏**（`shell.overlay`，不占三栏布局）：余额、今日花费、今日输入/输出；默认停靠右下角，**可拖动到界面任意位置**，位置保存在浏览器 `localStorage`，重启后保留；
 - **悬浮详情窗**：点击状态栏展开——余额明细、今日/本周/本月/累计花费、Token 明细、缓存命中率，以及最近 7 天 / 最近 12 个月的**可交互折线图**（花费 / Token 切换、悬停读数）；
 - **按模型拆分**：从 `request/header` 事件跟踪当前模型，usage 按模型分别记账；折线图**每个模型一条线 + 总价一条线**，详情窗另有各模型累计花费列表；
-- **花费记账**：按模型匹配官方价格（deepseek-v4-flash / deepseek-v4-pro 两套费率），并随 2026-08-17 峰谷价自动切换（北京时间 9–12 / 14–18 为高峰），费率字段见下方配置；
+- **花费记账**：按模型匹配官方价格（deepseek-v4-flash / deepseek-v4-pro 两套费率），并随 2026-08-17 峰谷价自动切换（北京时间 9–12 / 14–18 为高峰），费率字段见下方配置（flash 费率已同步 2026-09-10 官方调价：空闲 0.02/1/4，高峰 0.04/2/8）；
 - **token 记账**：监听 durable session 事件的 `assistant/chunk usage` / `assistant/message usage`，同一步骤后到的 usage 替换先到的（不双计）；按本地日期写入 `$DSH_HOME/usage-monitor/state.json`；
 - **缓存命中**：沿用 DSH token-meter 口径 `cacheRead / (uncachedInput + cacheRead + cacheWrite)`；
 - **余额**：用 `ctx.credentials` 解析 `DEEPSEEK_API_KEY`，轮询 `{balanceUrl}/user/balance`，默认 10 分钟一次；API key 永不下发到前端。
@@ -46,15 +46,17 @@ dsh-usage-monitor:
   peakInputPerM: 9
   peakOutputPerM: 27
   # --- deepseek-v4-flash 官方价 ---
-  flashPriceCacheHitPerM: 0.02
-  flashPriceInputPerM: 1
-  flashPriceOutputPerM: 2
-  flashOffPeakCacheHitPerM: 0.05
-  flashOffPeakInputPerM: 1.5
-  flashOffPeakOutputPerM: 4.5
-  flashPeakCacheHitPerM: 0.1
-  flashPeakInputPerM: 3
-  flashPeakOutputPerM: 9
+  # 2026-09-10 起官方调价：空闲 0.02 / 1 / 4，高峰 0.04 / 2 / 8。
+  # flashPrice* 三档仍是峰谷价生效日（priceEpoch）之前的旧价。
+  flashPriceCacheHitPerM: 0.02    # 生效日前：缓存命中输入
+  flashPriceInputPerM: 1          # 生效日前：缓存未命中输入
+  flashPriceOutputPerM: 2         # 生效日前：输出
+  flashOffPeakCacheHitPerM: 0.02  # 空闲时段：缓存命中输入
+  flashOffPeakInputPerM: 1
+  flashOffPeakOutputPerM: 4
+  flashPeakCacheHitPerM: 0.04     # 高峰时段（京时 9-12 / 14-18）
+  flashPeakInputPerM: 2
+  flashPeakOutputPerM: 8
 ```
 
 ## 限制

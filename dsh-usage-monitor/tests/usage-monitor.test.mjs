@@ -243,12 +243,12 @@ test('flash usage is priced with the flash table, not the pro table', () => {
   // 2026-08-17T01:00Z = Beijing 09:00, peak.
   assert.deepEqual(
     ratesForUsage(config, new Date('2026-08-17T01:00:00.000Z'), 'deepseek-v4-flash'),
-    { cacheHit: 0.1, input: 3, output: 9 },
+    { cacheHit: 0.04, input: 2, output: 8 },
   )
   // 2026-08-17T04:00Z = Beijing 12:00, off-peak gap between 12 and 14.
   assert.deepEqual(
     ratesForUsage(config, new Date('2026-08-17T04:00:00.000Z'), 'deepseek-v4-flash'),
-    { cacheHit: 0.05, input: 1.5, output: 4.5 },
+    { cacheHit: 0.02, input: 1, output: 4 },
   )
   // Before the epoch use the legacy flash price table.
   assert.deepEqual(
@@ -268,7 +268,7 @@ test('flash usage is priced with the flash table, not the pro table', () => {
     config,
     'deepseek-v4-pro',
   )
-  assert.equal(flash.costCny, 3)
+  assert.equal(flash.costCny, 2)
   assert.equal(pro.costCny, 9)
 })
 
@@ -278,8 +278,49 @@ test('foldUsage records flash cost with the flash peak price', () => {
     outputTokens: 0,
     cacheReadTokens: 0,
   }, 'deepseek-v4-flash', new Date('2026-08-17T01:00:00.000Z'))
-  assert.equal(ledger.allTime.costCny, 3)
-  assert.equal(ledger.byModel.allTime['deepseek-v4-flash'].costCny, 3)
+  assert.equal(ledger.allTime.costCny, 2)
+  assert.equal(ledger.byModel.allTime['deepseek-v4-flash'].costCny, 2)
+})
+
+test('v3 flash migration still recognizes the previous official flash table', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-usage-monitor-v3-old-'))
+  const file = path.join(dir, 'state.json')
+  const flash = {
+    uncachedInputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+    cacheWriteTokens: 0,
+    // v3 charged flash with pro peak prices: 9 + 27 + 0.3 = 36.3.
+    costCny: 36.3,
+  }
+  const v3 = {
+    version: 3,
+    allTime: { ...flash },
+    days: { '2026-08-17': { ...flash } },
+    months: { '2026-08': { ...flash } },
+    sessions: {},
+    lastStep: {},
+    byModel: {
+      allTime: { 'deepseek-v4-flash': flash },
+      days: { '2026-08-17': { 'deepseek-v4-flash': flash } },
+      months: { '2026-08': { 'deepseek-v4-flash': flash } },
+    },
+  }
+  fs.writeFileSync(file, JSON.stringify(v3))
+
+  // A ledger written while the 2026-08-17 table was the default must still be repaired.
+  const oldDefaults = {
+    ...DEFAULT_CONFIG,
+    flashOffPeakCacheHitPerM: 0.05, flashOffPeakInputPerM: 1.5, flashOffPeakOutputPerM: 4.5,
+    flashPeakCacheHitPerM: 0.1, flashPeakInputPerM: 3, flashPeakOutputPerM: 9,
+  }
+  const migrated = loadLedger(file, oldDefaults)
+  assert.equal(migrated.byModel.allTime['deepseek-v4-flash'].costCny, 12.1)
+  assert.equal(migrated.allTime.costCny, 12.1)
+
+  // A genuinely custom flash table is still left alone.
+  const untouched = loadLedger(file, { ...oldDefaults, flashPeakOutputPerM: 9.5 })
+  assert.equal(untouched.byModel.allTime['deepseek-v4-flash'].costCny, 36.3)
 })
 
 test('DeepSeek balance payload parses numeric strings and defaults currency', () => {

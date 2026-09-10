@@ -1,4 +1,4 @@
-﻿/**
+/**
  * dsh-usage-monitor — host half.
  *
  * - Tracks DeepSeek provider usage from durable session events into per-day /
@@ -72,12 +72,12 @@ export const ConfigSchema: z<UsageMonitorConfig> = z.object({
   flashPriceCacheHitPerM: z.number().default(0.02),
   flashPriceInputPerM: z.number().default(1),
   flashPriceOutputPerM: z.number().default(2),
-  flashOffPeakCacheHitPerM: z.number().default(0.05),
-  flashOffPeakInputPerM: z.number().default(1.5),
-  flashOffPeakOutputPerM: z.number().default(4.5),
-  flashPeakCacheHitPerM: z.number().default(0.1),
-  flashPeakInputPerM: z.number().default(3),
-  flashPeakOutputPerM: z.number().default(9),
+  flashOffPeakCacheHitPerM: z.number().default(0.02),
+  flashOffPeakInputPerM: z.number().default(1),
+  flashOffPeakOutputPerM: z.number().default(4),
+  flashPeakCacheHitPerM: z.number().default(0.04),
+  flashPeakInputPerM: z.number().default(2),
+  flashPeakOutputPerM: z.number().default(8),
 })
 
 export const DEFAULT_CONFIG: UsageMonitorConfig = {
@@ -96,16 +96,18 @@ export const DEFAULT_CONFIG: UsageMonitorConfig = {
   peakCacheHitPerM: 0.3,
   peakInputPerM: 9,
   peakOutputPerM: 27,
-  // Official deepseek-v4-flash prices before / after 2026-08-17.
+  // Official deepseek-v4-flash prices before the 2026-08-17 peak/off-peak schedule.
   flashPriceCacheHitPerM: 0.02,
   flashPriceInputPerM: 1,
   flashPriceOutputPerM: 2,
-  flashOffPeakCacheHitPerM: 0.05,
-  flashOffPeakInputPerM: 1.5,
-  flashOffPeakOutputPerM: 4.5,
-  flashPeakCacheHitPerM: 0.1,
-  flashPeakInputPerM: 3,
-  flashPeakOutputPerM: 9,
+  // Official deepseek-v4-flash peak/off-peak prices from 2026-09-10
+  // (off-peak 0.02 / 1 / 4, peak 0.04 / 2 / 8 CNY per 1M tokens).
+  flashOffPeakCacheHitPerM: 0.02,
+  flashOffPeakInputPerM: 1,
+  flashOffPeakOutputPerM: 4,
+  flashPeakCacheHitPerM: 0.04,
+  flashPeakInputPerM: 2,
+  flashPeakOutputPerM: 8,
 }
 
 /** Provider-neutral token buckets (same vocabulary as the built-in token meter). */
@@ -480,12 +482,35 @@ function roundCost(value: number): number {
  * same). Custom price tables are left untouched because their peak/off-peak
  * split is not stored per bucket.
  */
+/**
+ * deepseek-v4-flash peak/off-peak tables that have shipped as plugin defaults.
+ * The v3 repair below is only exact when the configured table is one of these
+ * official ones (flash was exactly one third of pro in every slot), so every
+ * table that ever shipped must stay listed even after the defaults move on.
+ */
+const KNOWN_FLASH_TABLES: ReadonlyArray<{ offPeak: readonly number[]; peak: readonly number[] }> = [
+  // Official table 2026-08-17 through 2026-09-09.
+  { offPeak: [0.05, 1.5, 4.5], peak: [0.1, 3, 9] },
+  // Official table from 2026-09-10 (off-peak 0.02 / 1 / 4, peak 0.04 / 2 / 8).
+  { offPeak: [0.02, 1, 4], peak: [0.04, 2, 8] },
+]
+
+function isKnownFlashTable(config: UsageMonitorConfig): boolean {
+  return KNOWN_FLASH_TABLES.some(table =>
+    config.flashOffPeakCacheHitPerM === table.offPeak[0]
+    && config.flashOffPeakInputPerM === table.offPeak[1]
+    && config.flashOffPeakOutputPerM === table.offPeak[2]
+    && config.flashPeakCacheHitPerM === table.peak[0]
+    && config.flashPeakInputPerM === table.peak[1]
+    && config.flashPeakOutputPerM === table.peak[2],
+  )
+}
+
 function migrateV3FlashPricing(ledger: LedgerState, config: UsageMonitorConfig): LedgerState {
   const isDefaultPricing = config.priceEpoch === '2026-08-17'
     && config.offPeakCacheHitPerM === 0.15 && config.offPeakInputPerM === 4.5 && config.offPeakOutputPerM === 13.5
     && config.peakCacheHitPerM === 0.3 && config.peakInputPerM === 9 && config.peakOutputPerM === 27
-    && config.flashOffPeakCacheHitPerM === 0.05 && config.flashOffPeakInputPerM === 1.5 && config.flashOffPeakOutputPerM === 4.5
-    && config.flashPeakCacheHitPerM === 0.1 && config.flashPeakInputPerM === 3 && config.flashPeakOutputPerM === 9
+    && isKnownFlashTable(config)
   if (!isDefaultPricing) return ledger
   const hasFlashBuckets = Object.values(ledger.byModel.days).some(models =>
     Object.keys(models).some(model => modelRateKind(model) === 'flash'),
